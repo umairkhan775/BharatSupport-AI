@@ -4,6 +4,7 @@ import { Sidebar } from './components/common/Sidebar';
 import { LandingPage } from './components/views/LandingPage';
 import { LoginPage } from './components/views/LoginPage';
 import { DashboardHome } from './components/views/DashboardHome';
+import { CitizenDashboard } from './components/views/CitizenDashboard';
 import { AIAssistantView } from './components/views/AIAssistantView';
 import { MyRequestsView } from './components/views/MyRequestsView';
 import { SupportRequestsView } from './components/views/SupportRequestsView';
@@ -195,16 +196,29 @@ const AppContent: React.FC = () => {
             ) : (
               <>
                 {activeView === 'dashboard' && (
-                  <DashboardHome
-                    onNavigate={(v) => setActiveView(v)}
-                    currentLanguage={currentLanguage}
-                    onSelectTicket={(t) => {
-                      setSelectedTicketIdForView(t.id);
-                      setActiveView('my-requests');
-                    }}
-                    onNavigateToChatWithQuery={handleNavigateToChatWithQuery}
-                    onOpenCreateTicket={(cat, title, desc, esc) => handleOpenCreateTicket(cat, title, desc, esc)}
-                  />
+                  isOfficerOrAdmin ? (
+                    <DashboardHome
+                      onNavigate={(v) => setActiveView(v)}
+                      currentLanguage={currentLanguage}
+                      onSelectTicket={(t) => {
+                        setSelectedTicketIdForView(t.id);
+                        setActiveView('my-requests');
+                      }}
+                      onNavigateToChatWithQuery={handleNavigateToChatWithQuery}
+                      onOpenCreateTicket={(cat, title, desc, esc) => handleOpenCreateTicket(cat, title, desc, esc)}
+                    />
+                  ) : (
+                    <CitizenDashboard
+                      onNavigate={(v) => setActiveView(v)}
+                      currentLanguage={currentLanguage}
+                      onSelectTicket={(t) => {
+                        setSelectedTicketIdForView(t.id);
+                        setActiveView('my-requests');
+                      }}
+                      onNavigateToChatWithQuery={handleNavigateToChatWithQuery}
+                      onOpenCreateTicket={(cat, title, desc, esc) => handleOpenCreateTicket(cat, title, desc, esc)}
+                    />
+                  )
                 )}
 
                 {activeView === 'ai-assistant' && (
