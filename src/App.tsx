@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Navbar } from './components/common/Navbar';
 import { Sidebar } from './components/common/Sidebar';
 import { LandingPage } from './components/views/LandingPage';
+import { LoginPage } from './components/views/LoginPage';
 import { DashboardHome } from './components/views/DashboardHome';
 import { AIAssistantView } from './components/views/AIAssistantView';
 import { MyRequestsView } from './components/views/MyRequestsView';
@@ -133,6 +134,14 @@ const AppContent: React.FC = () => {
             onEnterDashboard={() => setActiveView('dashboard')}
             onNavigateToChatWithQuery={handleNavigateToChatWithQuery}
             onNavigateToCreateTicket={(cat) => handleOpenCreateTicket(cat)}
+          />
+        </main>
+      ) : activeView === 'login' ? (
+        <main className="flex-1">
+          <LoginPage
+            currentLanguage={currentLanguage}
+            onLanguageChange={handleLanguageChange}
+            onNavigate={(view) => setActiveView(view)}
           />
         </main>
       ) : (

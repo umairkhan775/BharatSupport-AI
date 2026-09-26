@@ -560,13 +560,13 @@ export const Navbar: React.FC<NavbarProps> = ({
             /* Unauthenticated / Login Buttons */
             <div className="flex items-center gap-2">
               <button
-                onClick={() => openAuthModal('login')}
+                onClick={() => onNavigate('login')}
                 className="px-3.5 py-1.5 rounded-full text-xs font-bold text-[#1c2925] bg-white hover:bg-[#f6f8f5] border border-[#d8ded5] shadow-xs transition-all cursor-pointer"
               >
-                Sign In
+                Sign In / Login
               </button>
               <button
-                onClick={() => openAuthModal('signup')}
+                onClick={() => onNavigate('login')}
                 className="px-3.5 py-1.5 rounded-full text-xs font-bold text-white bg-[#126a50] hover:bg-[#0e5641] flex items-center gap-1 shadow-xs transition-all cursor-pointer"
               >
                 <Sparkles className="w-3 h-3" />
