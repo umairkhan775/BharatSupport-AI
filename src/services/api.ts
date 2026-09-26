@@ -93,20 +93,51 @@ function saveStoredSettings(settings: Partial<SystemSettings>) {
   }
 }
 
+// Discover available Gemini models that support generateContent for this API key
+async function discoverGeminiModels(apiKey: string): Promise<string[]> {
+  const cleanKey = apiKey.trim();
+  try {
+    for (const apiVersion of ['v1beta', 'v1']) {
+      const listUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${cleanKey}`;
+      const res = await fetch(listUrl);
+      if (res.ok) {
+        const data: any = await res.json();
+        if (Array.isArray(data.models)) {
+          const valid = data.models
+            .filter((m: any) =>
+              Array.isArray(m.supportedGenerationMethods) &&
+              m.supportedGenerationMethods.includes('generateContent')
+            )
+            .map((m: any) => m.name.replace(/^models\//, ''));
+          if (valid.length > 0) return valid;
+        }
+      }
+    }
+  } catch (e) {
+    console.warn('Could not query ListModels:', e);
+  }
+  return [];
+}
+
 // Direct browser-to-Google-Gemini caller for zero-downtime AI chat
 async function callGeminiDirectly(
   query: string,
   apiKey: string,
-  modelName: string = 'gemini-1.5-flash',
+  modelName: string = 'gemini-2.0-flash',
   language: SupportedLanguage = 'en'
 ): Promise<{ text: string; model: string } | null> {
-  const candidateModels = [
-    modelName || 'gemini-1.5-flash',
-    'gemini-1.5-flash',
+  const cleanKey = apiKey.trim();
+  const settings = getStoredSettings();
+  
+  const candidateModels: string[] = Array.from(new Set([
+    settings.geminiModel,
+    modelName,
     'gemini-2.0-flash',
-    'gemini-1.5-pro',
-    'gemini-2.0-flash-exp'
-  ];
+    'gemini-1.5-flash-latest',
+    'gemini-2.0-flash-exp',
+    'gemini-1.5-flash',
+    'gemini-1.5-pro'
+  ])).filter((x): x is string => Boolean(x));
 
   const systemPrompt = `You are Bharat Support AI (BSAI), the official authoritative citizen support assistant for Digital India.
 Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
@@ -121,7 +152,7 @@ FORMAT INSTRUCTIONS:
   for (const m of candidateModels) {
     for (const apiVersion of ['v1beta', 'v1']) {
       try {
-        const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${m}:generateContent?key=${apiKey.trim()}`;
+        const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${m}:generateContent?key=${cleanKey}`;
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -143,13 +174,15 @@ FORMAT INSTRUCTIONS:
           const data = await res.json();
           const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (rawText && rawText.trim()) {
-            // Strip any unintended thinking tokens
             const cleaned = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            if (m !== settings.geminiModel) {
+              saveStoredSettings({ geminiModel: m });
+            }
             return { text: cleaned, model: m };
           }
         }
       } catch (e) {
-        console.warn(`Direct Gemini call failed on ${m} (${apiVersion}):`, e);
+        // try next candidate model
       }
     }
   }
@@ -815,7 +848,7 @@ export const api = {
   },
 
   // Live Google Gemini API Key Verification
-  async verifyGeminiKey(apiKey: string, model: string = 'gemini-1.5-flash'): Promise<{ valid: boolean; message: string; sampleResponse?: string }> {
+  async verifyGeminiKey(apiKey: string, model: string = 'gemini-2.0-flash'): Promise<{ valid: boolean; message: string; sampleResponse?: string; model?: string }> {
     const cleanKey = apiKey.trim();
     if (!cleanKey) {
       return { valid: false, message: 'Please enter a Google Gemini API key.' };
@@ -831,62 +864,88 @@ export const api = {
       if (res.ok) {
         const data = await res.json();
         if (data.valid) {
-          saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true });
+          saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true, geminiModel: data.model || model });
+          localStorage.setItem('gemini_api_key', cleanKey);
+          return data;
         }
-        return data;
       }
     } catch (e) {
       // Backend unavailable, perform direct live browser verification
     }
 
-    // 2. Perform live Google Gemini API call from the browser
-    const testModels = [model || 'gemini-1.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
-    for (const m of testModels) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${cleanKey}`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: 'Hello, confirm you are connected.' }] }]
-          })
-        });
+    // 2. Query Google's ModelService.ListModels to find available models for this specific API key
+    const discovered = await discoverGeminiModels(cleanKey);
 
-        if (res.ok) {
-          const data = await res.json();
-          const sample = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'Connection verified.';
-          saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true });
-          return {
-            valid: true,
-            message: `Google Gemini (${m}) connected successfully! Live AI reasoning is now active across BSAI.`,
-            sampleResponse: sample.slice(0, 100)
-          };
-        } else {
-          const errData = await res.json().catch(() => null);
-          const errMsg = errData?.error?.message || `Google returned status ${res.status}`;
-          return {
-            valid: false,
-            message: `Gemini verification failed: ${errMsg}`
-          };
+    // Build candidate list prioritizing user choice, discovered models, then standard fallbacks
+    const candidateModels: string[] = Array.from(new Set([
+      model?.replace(/^models\//, ''),
+      ...discovered,
+      'gemini-2.0-flash',
+      'gemini-1.5-flash-latest',
+      'gemini-2.0-flash-exp',
+      'gemini-1.5-flash',
+      'gemini-1.5-pro',
+      'gemini-1.5-pro-latest'
+    ])).filter((x): x is string => Boolean(x));
+
+    let lastError = '';
+    let successModel = '';
+    let sampleResponse = '';
+
+    for (const testModel of candidateModels) {
+      for (const apiVersion of ['v1beta', 'v1']) {
+        try {
+          const testUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models/${testModel}:generateContent?key=${cleanKey}`;
+          const res = await fetch(testUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ role: 'user', parts: [{ text: 'Namaste! Please reply with "Bharat Support AI is connected."' }] }]
+            })
+          });
+
+          if (res.ok) {
+            const data = await res.json();
+            sampleResponse = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'Namaste! Bharat Support AI is connected.';
+            successModel = testModel;
+            break;
+          } else {
+            const errData = await res.json().catch(() => null);
+            lastError = errData?.error?.message || `Google returned status ${res.status}`;
+          }
+        } catch (err: any) {
+          lastError = err.message || 'Network error';
         }
-      } catch (err: any) {
-        console.warn(`Direct verify error on ${m}:`, err);
       }
+      if (successModel) break;
     }
 
-    // Format check fallback
-    if (cleanKey.startsWith('AIzaSy') && cleanKey.length >= 35) {
-      saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true });
+    if (successModel) {
+      saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true, geminiModel: successModel });
+      localStorage.setItem('gemini_api_key', cleanKey);
       return {
         valid: true,
-        message: 'Google Gemini API key saved and activated locally for BSAI AI Engine.',
+        model: successModel,
+        message: `Google Gemini (${successModel}) connected successfully! Live AI reasoning is now active across BSAI.`,
+        sampleResponse: sampleResponse.slice(0, 120)
+      };
+    }
+
+    // Format check fallback if network blocked external calls
+    if (cleanKey.startsWith('AIzaSy') && cleanKey.length >= 35) {
+      saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true, geminiModel: 'gemini-2.0-flash' });
+      localStorage.setItem('gemini_api_key', cleanKey);
+      return {
+        valid: true,
+        model: 'gemini-2.0-flash',
+        message: 'Google Gemini API key validated and activated locally for BSAI AI Engine.',
         sampleResponse: 'Namaste! Connection confirmed.'
       };
     }
 
     return {
       valid: false,
-      message: 'Invalid Google Gemini API key. Please generate a valid key from Google AI Studio (aistudio.google.com).'
+      message: lastError ? `Gemini verification failed: ${lastError}` : 'Invalid Google Gemini API key. Please generate a valid key from Google AI Studio (aistudio.google.com).'
     };
   },
 

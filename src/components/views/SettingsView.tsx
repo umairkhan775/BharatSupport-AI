@@ -297,15 +297,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 {t('gemini_model')}:
               </label>
               <select
-                value={settings.geminiModel || 'gemini-1.5-flash'}
+                value={settings.geminiModel || 'gemini-2.0-flash'}
                 onChange={(e) =>
                   setSettings({ ...settings, geminiModel: e.target.value })
                 }
                 className="w-full bg-white border border-[#dce3da] rounded-md px-3 py-2 text-xs font-semibold text-bsai-indigo focus:outline-none focus:border-[#126a50] cursor-pointer"
               >
-                <option value="gemini-1.5-flash">Gemini 1.5 Flash (Fast & Multilingual)</option>
-                <option value="gemini-2.0-flash">Gemini 2.0 Flash (Next-Gen)</option>
-                <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep Reasoning)</option>
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash (Recommended)</option>
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                <option value="gemini-1.5-flash-latest">Gemini 1.5 Flash Latest</option>
+                <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
               </select>
             </div>
           </div>
