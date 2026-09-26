@@ -8,10 +8,23 @@ const router = Router();
 // Send a chat message and get AI response
 router.post('/message', async (req: Request, res: Response) => {
   try {
-    const { conversationId, query, language = 'en', category, citizenName = 'Citizen' } = req.body;
+    const { conversationId, query, language = 'en', category, citizenName = 'Citizen', apiKey, skipAiResponse } = req.body;
 
     if (!query || typeof query !== 'string') {
       return res.status(400).json({ error: 'Query is required' });
+    }
+
+    const cleanApiKey = (typeof apiKey === 'string' && apiKey.trim() && !apiKey.includes('...')) ? apiKey.trim() : undefined;
+    if (cleanApiKey) {
+      process.env.GEMINI_API_KEY = cleanApiKey;
+      try {
+        await db.run(
+          'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+          ['geminiApiKey', cleanApiKey]
+        );
+      } catch (dbErr) {
+        console.warn('Could not persist geminiApiKey to db:', dbErr);
+      }
     }
 
     const convId = conversationId || `conv-${Date.now()}`;
@@ -25,9 +38,14 @@ router.post('/message', async (req: Request, res: Response) => {
       [userMsgId, convId, 'user', query, category || null, null, language, nowIso, 0]
     );
 
-    // 2. Process query through AI Engine
+    // If client handled Gemini directly and just sent audit record
+    if (skipAiResponse) {
+      return res.json({ success: true, message: 'Recorded' });
+    }
+
+    // 2. Process query through AI Engine with priority apiKey
     const startTime = Date.now();
-    const aiResult = await processAIQuery(query, language as SupportedLanguage, category as SupportCategory);
+    const aiResult = await processAIQuery(query, language as SupportedLanguage, category as SupportCategory, cleanApiKey);
     const durationMs = Date.now() - startTime;
 
     // 3. Record AI Response Message

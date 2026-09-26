@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { api } from '../../services/api';
+import { api, getEffectiveGeminiKey } from '../../services/api';
 import { SystemSettings, SupportedLanguage } from '../../types';
 import { SUPPORTED_LANGUAGES, getTranslation } from '../../data/i18n';
 import {
@@ -54,6 +54,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     const load = async () => {
       try {
         const d = await api.getSettings();
+        const effectiveKey = getEffectiveGeminiKey();
+        if (effectiveKey) {
+          d.apiKeySet = true;
+          d.geminiApiKey = effectiveKey;
+        }
         setSettings(d);
         if (d.defaultLanguage && d.defaultLanguage !== currentLanguage) {
           onLanguageChange(d.defaultLanguage);
@@ -75,10 +80,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     try {
       setIsVerifying(true);
       setVerifyResult(null);
-      const keyToTest = enteredApiKey.trim() || settings.geminiApiKey || '';
+      const cleanInput = enteredApiKey.trim();
+      const keyToTest = cleanInput || getEffectiveGeminiKey() || settings.geminiApiKey || '';
       const res = await api.verifyGeminiKey(keyToTest, settings.geminiModel || 'gemini-2.0-flash');
       setVerifyResult(res);
       if (res.valid) {
+        if (cleanInput) {
+          localStorage.setItem('bsai_gemini_key_raw', cleanInput);
+          localStorage.setItem('gemini_api_key', cleanInput);
+        }
         setSettings((prev) => ({
           ...prev,
           apiKeySet: true,
@@ -103,8 +113,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         ...settings,
         defaultLanguage: currentLanguage,
       };
-      if (enteredApiKey.trim()) {
-        payload.geminiApiKey = enteredApiKey.trim();
+      const cleanInput = enteredApiKey.trim();
+      if (cleanInput) {
+        payload.geminiApiKey = cleanInput;
+        localStorage.setItem('bsai_gemini_key_raw', cleanInput);
+        localStorage.setItem('gemini_api_key', cleanInput);
       }
 
       await api.saveSettings(payload);
@@ -113,6 +126,11 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
       // Refresh loaded settings state
       const fresh = await api.getSettings();
+      const effectiveKey = getEffectiveGeminiKey();
+      if (effectiveKey) {
+        fresh.apiKeySet = true;
+        fresh.geminiApiKey = effectiveKey;
+      }
       setSettings(fresh);
       setEnteredApiKey('');
     } catch (e) {

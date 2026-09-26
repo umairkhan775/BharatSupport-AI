@@ -56,20 +56,46 @@ function saveStoredEscalations(items: EscalationItem[]) {
   }
 }
 
+export function getEffectiveGeminiKey(): string {
+  try {
+    const rawLocal = (localStorage.getItem('bsai_gemini_key_raw') || '').trim();
+    if (rawLocal && !rawLocal.includes('...')) return rawLocal;
+
+    const legacyLocal = (localStorage.getItem('gemini_api_key') || '').trim();
+    if (legacyLocal && !legacyLocal.includes('...')) return legacyLocal;
+
+    const rawSettings = localStorage.getItem('bsai_settings');
+    if (rawSettings) {
+      try {
+        const parsed = JSON.parse(rawSettings);
+        if (parsed.geminiApiKey && typeof parsed.geminiApiKey === 'string' && !parsed.geminiApiKey.includes('...')) {
+          return parsed.geminiApiKey.trim();
+        }
+      } catch {}
+    }
+
+    const envKey = ((import.meta as any).env?.VITE_GEMINI_API_KEY as string || '').trim();
+    if (envKey && !envKey.includes('...')) return envKey;
+  } catch (e) {
+    console.error('Error reading effective Gemini key:', e);
+  }
+  return '';
+}
+
 function getStoredSettings(): SystemSettings {
   try {
     const raw = localStorage.getItem('bsai_settings');
-    const localKey = localStorage.getItem('gemini_api_key');
+    const effectiveKey = getEffectiveGeminiKey();
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (localKey && !parsed.geminiApiKey) {
-        parsed.geminiApiKey = localKey;
+      if (effectiveKey) {
+        parsed.geminiApiKey = effectiveKey;
         parsed.apiKeySet = true;
       }
       return { ...MOCK_SETTINGS, ...parsed };
     }
-    if (localKey) {
-      return { ...MOCK_SETTINGS, geminiApiKey: localKey, apiKeySet: true };
+    if (effectiveKey) {
+      return { ...MOCK_SETTINGS, geminiApiKey: effectiveKey, apiKeySet: true };
     }
   } catch (e) {
     console.error('Error reading bsai_settings:', e);
@@ -77,14 +103,27 @@ function getStoredSettings(): SystemSettings {
   return MOCK_SETTINGS;
 }
 
-function saveStoredSettings(settings: Partial<SystemSettings>) {
+function saveStoredSettings(settings: Partial<SystemSettings>): SystemSettings {
   try {
     const curr = getStoredSettings();
     const updated = { ...curr, ...settings };
-    if (settings.geminiApiKey) {
-      localStorage.setItem('gemini_api_key', settings.geminiApiKey.trim());
+    
+    // Only save key if it is real and not masked with dots
+    if (settings.geminiApiKey && typeof settings.geminiApiKey === 'string' && !settings.geminiApiKey.includes('...')) {
+      const clean = settings.geminiApiKey.trim();
+      localStorage.setItem('bsai_gemini_key_raw', clean);
+      localStorage.setItem('gemini_api_key', clean);
+      updated.geminiApiKey = clean;
       updated.apiKeySet = true;
+    } else {
+      // Preserve existing real key if incoming is masked or omitted
+      const existing = getEffectiveGeminiKey();
+      if (existing) {
+        updated.geminiApiKey = existing;
+        updated.apiKeySet = true;
+      }
     }
+    
     localStorage.setItem('bsai_settings', JSON.stringify(updated));
     return updated;
   } catch (e) {
@@ -96,6 +135,7 @@ function saveStoredSettings(settings: Partial<SystemSettings>) {
 // Discover available Gemini models that support generateContent for this API key
 async function discoverGeminiModels(apiKey: string): Promise<string[]> {
   const cleanKey = apiKey.trim();
+  if (!cleanKey || cleanKey.includes('...')) return [];
   try {
     for (const apiVersion of ['v1beta', 'v1']) {
       const listUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models?key=${cleanKey}`;
@@ -127,27 +167,29 @@ async function callGeminiDirectly(
   language: SupportedLanguage = 'en'
 ): Promise<{ text: string; model: string } | null> {
   const cleanKey = apiKey.trim();
+  if (!cleanKey || cleanKey.includes('...')) return null;
+
   const settings = getStoredSettings();
   
   const candidateModels: string[] = Array.from(new Set([
+    'gemini-2.0-flash',
     settings.geminiModel,
     modelName,
-    'gemini-2.0-flash',
     'gemini-1.5-flash-latest',
     'gemini-2.0-flash-exp',
     'gemini-1.5-flash',
     'gemini-1.5-pro'
-  ])).filter((x): x is string => Boolean(x));
+  ])).filter((x): x is string => typeof x === 'string' && x.length > 0 && !x.startsWith('bsai-'));
 
   const systemPrompt = `You are Bharat Support AI (BSAI), the official authoritative citizen support assistant for Digital India.
-Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
+Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License, Ration Card), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
 
-FORMAT INSTRUCTIONS:
-- Start with a respectful greeting (e.g. "Namaste!").
-- Give a direct, structured response with markdown bold headers and numbered action steps.
-- Include official portal links (use real .gov.in URLs) and toll-free helpline numbers where applicable.
-- Answer in the citizen's preferred language or style (Language: ${language}). If the citizen speaks Hindi or Hinglish, answer respectfully in Hindi / Hinglish.
-- CRITICAL: Output ONLY the final citizen-facing response. NEVER output internal thoughts, draft notes, or reasoning scratchpads.`;
+LANGUAGE & CONVERSATION RULES:
+- The citizen may speak English, Hindi, Hinglish (Hindi written in Latin script, e.g. "ghee khtm", "rashan nahi mil raha", "kisan kist kab aayegi", "ration card kaise banaye"), or regional languages (${language}).
+- ALWAYS reply in the SAME language or style the citizen uses! If they ask in Hinglish, reply in natural, respectful Hinglish. If in Hindi, reply in Hindi. If in English, reply in English.
+- If a query is very brief or colloquial (like "ghee khtm" or "ration khtm"), understand the real-life citizen situation: explain that food grains/rations are distributed under NFSA & PMGKAY at Fair Price Shops (FPS), provide the National Food Helpline 1967 / 1800-180-2087, and guide them on how to check quota or lodge a dealer grievance.
+- FORMAT: Start with a respectful greeting (e.g. "Namaste!"), followed by clear markdown bold points and numbered steps. Include real .gov.in official portals and toll-free helplines.
+- CRITICAL: Output ONLY the final citizen-facing response. NEVER output internal thoughts, draft notes, or reasoning tags.`;
 
   for (const m of candidateModels) {
     for (const apiVersion of ['v1beta', 'v1']) {
@@ -418,32 +460,15 @@ export const api = {
     category?: SupportCategory;
     citizenName?: string;
   }): Promise<{ aiMessage: ChatMessage; intent?: any; suggestedActions?: string[] }> {
-    // 1. Try backend API first
-    try {
-      const res = await fetch(`${API_BASE}/chat/message`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(params),
-      });
-      if (res.ok) {
-        return await res.json();
-      }
-    } catch (e) {
-      // Backend offline / not reachable
-    }
-
-    // 2. Check if a Gemini API key is configured in Settings or Local Storage
+    const effectiveKey = getEffectiveGeminiKey();
     const settings = getStoredSettings();
-    const geminiKey =
-      settings.geminiApiKey ||
-      localStorage.getItem('gemini_api_key') ||
-      ((import.meta as any).env?.VITE_GEMINI_API_KEY as string);
 
-    if (geminiKey && geminiKey.trim().startsWith('AIzaSy')) {
+    // 1. If Gemini API key is configured and valid, invoke Google Gemini for genuine generative reasoning
+    if (effectiveKey && effectiveKey.length >= 20 && !effectiveKey.includes('...')) {
       const geminiResult = await callGeminiDirectly(
         params.query,
-        geminiKey,
-        settings.geminiModel || 'gemini-1.5-flash',
+        effectiveKey,
+        settings.geminiModel || 'gemini-2.0-flash',
         params.language || 'en'
       );
 
@@ -456,25 +481,53 @@ export const api = {
         else if (qLower.includes('complaint') || qLower.includes('grievance') || qLower.includes('electricity') || qLower.includes('water')) cat = 'Grievance Redressal';
         else if (qLower.includes('skill') || qLower.includes('job') || qLower.includes('training')) cat = 'Employment';
 
+        const aiMessage: ChatMessage = {
+          id: `ai-${Date.now()}`,
+          sender: 'ai',
+          content: geminiResult.text,
+          timestamp: new Date().toISOString(),
+          category: cat,
+          confidence: 0.99,
+          language: params.language,
+          suggestedActions: ['Create Official Request', 'Track Application Status', 'Connect with Nodal Desk'],
+          sources: [`Google Gemini (${geminiResult.model})`, 'Digital India National Portals']
+        };
+
+        // Asynchronously notify backend to record user message & audit trail in database
+        fetch(`${API_BASE}/chat/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...params, apiKey: effectiveKey, skipAiResponse: true }),
+        }).catch(() => {});
+
         return {
-          aiMessage: {
-            id: `ai-${Date.now()}`,
-            sender: 'ai',
-            content: geminiResult.text,
-            timestamp: new Date().toISOString(),
-            category: cat,
-            confidence: 0.99,
-            language: params.language,
-            suggestedActions: ['Create Official Request', 'Track Application Status', 'Connect with Nodal Desk'],
-            sources: [`Google Gemini (${geminiResult.model})`, 'Digital India National Portals']
-          },
+          aiMessage,
           intent: {
             category: cat,
             confidence: 0.99,
-            urgency: 'Medium'
-          }
+            urgency: 'Medium',
+            suggestedActions: ['Create Official Request', 'Track Application Status', 'Connect with Nodal Desk']
+          },
+          suggestedActions: ['Create Official Request', 'Track Application Status', 'Connect with Nodal Desk']
         };
       }
+    }
+
+    // 2. Try backend API with passed apiKey
+    try {
+      const res = await fetch(`${API_BASE}/chat/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...params, apiKey: effectiveKey }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.aiMessage && data.aiMessage.content) {
+          return data;
+        }
+      }
+    } catch (e) {
+      // Backend offline / not reachable
     }
 
     // 3. Fallback to smart local responder
@@ -866,6 +919,7 @@ export const api = {
         if (data.valid) {
           saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true, geminiModel: data.model || model });
           localStorage.setItem('gemini_api_key', cleanKey);
+          localStorage.setItem('bsai_gemini_key_raw', cleanKey);
           return data;
         }
       }
@@ -923,6 +977,7 @@ export const api = {
     if (successModel) {
       saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true, geminiModel: successModel });
       localStorage.setItem('gemini_api_key', cleanKey);
+      localStorage.setItem('bsai_gemini_key_raw', cleanKey);
       return {
         valid: true,
         model: successModel,

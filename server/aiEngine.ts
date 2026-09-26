@@ -317,111 +317,72 @@ function cleanGeminiOutput(rawText: string): string {
 }
 
 // Call Google Gemini API with citizen context and multi-language support
+// Call Google Gemini API with citizen context and multi-language support
 async function callGoogleGeminiAPI(
   query: string,
   language: SupportedLanguage = 'en',
   categoryFilter?: SupportCategory,
-  kbArticles: any[] = []
+  kbArticles: any[] = [],
+  apiKeyOverride?: string
 ): Promise<AIProcessingResult | null> {
   try {
     const keyRow = await db.get('SELECT value FROM settings WHERE key = ?', ['geminiApiKey']);
     const modelRow = await db.get('SELECT value FROM settings WHERE key = ?', ['geminiModel']);
-    const apiKey = keyRow?.value || process.env.GEMINI_API_KEY;
+    
+    let apiKey = (apiKeyOverride || keyRow?.value || process.env.GEMINI_API_KEY || '').trim();
+    if (apiKey.includes('...')) {
+      apiKey = (apiKeyOverride || process.env.GEMINI_API_KEY || '').trim();
+    }
     const model = modelRow?.value || 'gemini-2.0-flash';
 
-    if (!apiKey || !apiKey.trim()) {
+    if (!apiKey || apiKey.length < 15 || apiKey.includes('...')) {
       return null;
     }
-
-    const languageDetails: Record<SupportedLanguage, { name: string; script: string }> = {
-      en: { name: 'English', script: 'English Latin script' },
-      hi: { name: 'Hindi', script: 'Devanagari script (हिन्दी)' },
-      gu: { name: 'Gujarati', script: 'Gujarati script (ગુજરાતી)' },
-      te: { name: 'Telugu', script: 'Telugu script (తెలుగు)' },
-      ta: { name: 'Tamil', script: 'Tamil script (தமிழ்)' },
-      bn: { name: 'Bengali', script: 'Bengali script (বাংলা)' },
-      mr: { name: 'Marathi', script: 'Marathi Devanagari (मराठी)' },
-      kn: { name: 'Kannada', script: 'Kannada script (ಕನ್ನಡ)' },
-    };
-
-    const targetLangInfo = languageDetails[language] || languageDetails.en;
 
     const kbContext = kbArticles.length > 0
       ? `\nVerified Digital India Knowledge Base Records:\n` +
         kbArticles.map((a, i) => `${i + 1}. [${a.category}] ${a.title}: ${a.summary}. Portal: ${a.official_portal_url || 'N/A'}`).join('\n')
       : '';
 
-    const systemInstructionText = `You are Bharat Support AI (BSAI), the official AI Citizen Support Assistant for Digital India.
-Your mission is to help citizens with accurate, step-by-step guidance on Government Schemes (such as PMKVY Skill India, PM-Kisan, Ayushman Bharat, PM-Awas, NSP Scholarships, PM Mudra loans), Citizen Identity & Documents (Aadhaar, PAN, Passport, DigiLocker, Ration Card), and Public Grievance Redressal (CPGRAMS).
+    const systemInstructionText = `You are Bharat Support AI (BSAI), the official authoritative citizen support assistant for Digital India.
+Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License, Ration Card), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
 
-RESPONSE FORMAT:
-- Speak directly to the citizen as Bharat Support AI in ${targetLangInfo.name} (${targetLangInfo.script}).
-- Use clear Markdown formatting with bold section headers, concise bullet points, numbered action steps, official portal links (e.g. https://www.skillindia.gov.in, https://pmkisan.gov.in, https://pgportal.gov.in), and toll-free helplines.
-- Never output reasoning outlines, drafting checklists, prompt notes, or meta-commentary. Answer the citizen directly.
+LANGUAGE & CONVERSATION RULES:
+- The citizen may speak English, Hindi, Hinglish (Hindi written in Latin script, e.g. "ghee khtm", "rashan nahi mil raha", "kisan kist kab aayegi", "ration card kaise banaye"), or regional languages (${language}).
+- ALWAYS reply in the SAME language or style the citizen uses! If they ask in Hinglish, reply in natural, respectful Hinglish. If in Hindi, reply in Hindi. If in English, reply in English.
+- If a query is very brief or colloquial (like "ghee khtm" or "ration khtm"), understand the real-life citizen situation: explain that food grains/rations are distributed under NFSA & PMGKAY at Fair Price Shops (FPS), provide the National Food Helpline 1967 / 1800-180-2087, and guide them on how to check quota or lodge a dealer grievance.
+- FORMAT: Start with a respectful greeting (e.g. "Namaste!"), followed by clear markdown bold points and numbered steps. Include real .gov.in official portals and toll-free helplines.
+- CRITICAL: Output ONLY the final citizen-facing response. NEVER output internal thoughts, draft notes, or reasoning tags.
 ${kbContext}`;
 
     const candidateModels = Array.from(new Set([
-      model,
       'gemini-2.0-flash',
-      'gemini-1.5-flash',
+      model,
       'gemini-1.5-flash-latest',
       'gemini-2.0-flash-exp',
-      'gemini-1.5-pro',
-      'gemini-pro'
-    ])).filter(Boolean);
+      'gemini-1.5-flash',
+      'gemini-1.5-pro'
+    ])).filter((m): m is string => Boolean(m) && !m.startsWith('bsai-'));
 
     let replyText = '';
     let resolvedModel = model;
 
-    const fewShotExamples = language === 'hi' ? [
-      {
-        role: 'user',
-        parts: [{ text: 'पीएम किसान की किस्त कैसे चेक करें?' }]
-      },
-      {
-        role: 'model',
-        parts: [{ text: 'नमस्ते! **पीएम-किसान सम्मान निधि** योजना की किस्त जांचने के आधिकारिक चरण निम्न हैं:\n\n1. आधिकारिक पोर्टल [pmkisan.gov.in](https://pmkisan.gov.in) पर जाएं।\n2. **Know Your Status** विकल्प चुनें।\n3. अपना पंजीकरण नंबर (Registration Number) दर्ज करें।\n4. **Get Data** पर क्लिक करके अपनी किस्त और बैंक आधार सीडिंग स्थिति देखें।\n\n**आधिकारिक हेल्पलाइन**: 155261 / 011-24300606' }]
-      }
-    ] : language === 'gu' ? [
-      {
-        role: 'user',
-        parts: [{ text: 'પીએમ કિસાન યોજના વિશે માહિતી આપો' }]
-      },
-      {
-        role: 'model',
-        parts: [{ text: 'નમસ્તે! **પીએમ-કિસાન સન્માન નિધિ** યોજના હેઠળ ખેડૂતોને વાર્ષિક ₹6,000 ની સહાય મળે છે:\n\n1. સત્તાવાર પોર્ટલ: [pmkisan.gov.in](https://pmkisan.gov.in)\n2. લાભાર્થી યાદી અને હપ્તાની વિગત જોવા માટે પોર્ટલ પર **Know Your Status** પર ક્લિક કરો.\n3. નોંધણી નંબર દાખલ કરી સ્ટેટસ ચકાસો.\n\n**ટોલ-ફ્રી હેલ્પલાઇન**: 155261' }]
-      }
-    ] : [
-      {
-        role: 'user',
-        parts: [{ text: 'How do I check my PM-Kisan status?' }]
-      },
-      {
-        role: 'model',
-        parts: [{ text: 'Namaste! To check your **PM-Kisan Samman Nidhi** installment and beneficiary status:\n\n1. Visit the official portal: [pmkisan.gov.in](https://pmkisan.gov.in)\n2. In the Farmers Corner, click on **Know Your Status**.\n3. Enter your Registration Number and Captcha.\n4. Click **Get Data** to view your disbursement and Aadhaar bank seeding details.\n\n**Official Helpline**: 155261 / 011-24300606' }]
-      }
-    ];
-
     for (const testModel of candidateModels) {
       for (const apiVersion of ['v1beta', 'v1']) {
         try {
-          const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${testModel}:generateContent?key=${apiKey.trim()}`;
+          const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${testModel}:generateContent?key=${apiKey}`;
           const res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              system_instruction: {
-                parts: [{ text: systemInstructionText }]
-              },
               contents: [
-                ...fewShotExamples,
                 {
                   role: 'user',
-                  parts: [{ text: categoryFilter ? `[Category: ${categoryFilter}] Query: ${query}` : query }]
+                  parts: [{ text: `${systemInstructionText}\n\nCitizen Query: "${query}"` }]
                 }
               ],
               generationConfig: {
-                temperature: 0.5,
+                temperature: 0.4,
                 maxOutputTokens: 1024,
               }
             })
@@ -435,12 +396,9 @@ ${kbContext}`;
               resolvedModel = testModel;
               break;
             }
-          } else {
-            const errText = await res.text();
-            console.error(`Gemini call error on ${testModel} (${apiVersion}):`, res.status, errText);
           }
         } catch (e) {
-          console.error(`Gemini fetch exception on ${testModel} (${apiVersion}):`, e);
+          // try next model / version
         }
       }
       if (replyText) break;
@@ -483,11 +441,11 @@ ${kbContext}`;
   }
 }
 
-
 export async function processAIQuery(
   query: string,
   language: SupportedLanguage = 'en',
-  categoryFilter?: SupportCategory
+  categoryFilter?: SupportCategory,
+  apiKeyOverride?: string
 ): Promise<AIProcessingResult> {
   const lowerQuery = query.toLowerCase().trim();
 
@@ -509,7 +467,7 @@ export async function processAIQuery(
   }
 
   // 3. Try Google Gemini API first if configured
-  const geminiResult = await callGoogleGeminiAPI(query, language, categoryFilter, kbResults);
+  const geminiResult = await callGoogleGeminiAPI(query, language, categoryFilter, kbResults, apiKeyOverride);
   if (geminiResult) {
     return geminiResult;
   }
