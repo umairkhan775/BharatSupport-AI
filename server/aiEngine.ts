@@ -340,15 +340,9 @@ async function callGoogleGeminiAPI(
         kbArticles.map((a, i) => `${i + 1}. [${a.category}] ${a.title}: ${a.summary}. Portal: ${a.official_portal_url || 'N/A'}`).join('\n')
       : '';
 
-    const systemInstructionText = `You are Bharat Support AI (BSAI), the official authoritative citizen support assistant for Digital India.
-Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License, Ration Card), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
-
-LANGUAGE & CONVERSATION RULES:
-- The citizen may speak English, Hindi, Hinglish (Hindi written in Latin script, e.g. "ghee khtm", "rashan nahi mil raha", "kisan kist kab aayegi", "ration card kaise banaye"), or regional languages (${language}).
-- ALWAYS reply in the SAME language or style the citizen uses! If they ask in Hinglish, reply in natural, respectful Hinglish. If in Hindi, reply in Hindi. If in English, reply in English.
-- If a query is very brief or colloquial (like "ghee khtm" or "ration khtm"), understand the real-life citizen situation: explain that food grains/rations are distributed under NFSA & PMGKAY at Fair Price Shops (FPS), provide the National Food Helpline 1967 / 1800-180-2087, and guide them on how to check quota or lodge a dealer grievance.
-- FORMAT: Start with a respectful greeting (e.g. "Namaste!"), followed by clear markdown bold points and numbered steps. Include real .gov.in official portals and toll-free helplines.
-- CRITICAL: Output ONLY the final citizen-facing response. NEVER output internal thoughts, draft notes, or reasoning tags.
+    const systemInstructionText = `You are Bharat Support AI (BSAI), the official digital citizen assistant for Digital India.
+Your mission is to provide helpful, empathetic guidance to citizens on Government Schemes (PM-Kisan, Ayushman Bharat, PM Awas), official documents (Aadhaar, PAN, DigiLocker, Ration Card), and public grievances (CPGRAMS).
+You speak fluently in English, Hindi, and Hinglish. Always talk directly to the citizen with warmth and respect. Provide official .gov.in portal links and toll-free helplines when relevant.
 ${kbContext}`;
 
     const candidateModels = Array.from(new Set([
@@ -364,6 +358,14 @@ ${kbContext}`;
     let resolvedModel = model;
 
     const conversationContents = [
+      {
+        role: 'user',
+        parts: [{ text: 'hello' }]
+      },
+      {
+        role: 'model',
+        parts: [{ text: 'Hello! I am Bharat Support AI (BSAI), your official assistant for Digital India. How can I help you today? You can ask me about government welfare schemes (like PM-Kisan or Ayushman Bharat), citizen documents (like Aadhaar or Ration Card), or help with civic grievances.' }]
+      },
       {
         role: 'user',
         parts: [{ text: 'hi bhai' }]
@@ -401,6 +403,9 @@ ${kbContext}`;
               generationConfig: {
                 temperature: 0.3,
                 maxOutputTokens: 1024,
+                thinkingConfig: {
+                  thinkingBudget: 0
+                }
               }
             })
           });

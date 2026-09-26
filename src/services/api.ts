@@ -179,7 +179,7 @@ export function cleanGeminiOutput(rawText: string): string {
       continue;
     }
     if (
-      /^\s*(\*|-|\d+\.)\s*(\*?Greeting\?|\*?Markdown bold\?|\*?Numbered steps|\*?Official tone|\*?Language match|\*?No internal thoughts|\*?No thought process|\*?Tone:\s*(?:Empathetic|Respectful|Courteous|Helpful)|[A-Za-z\s/]+\?\s*(?:Yes|No)\.?)/i.test(l)
+      /^\s*(\*|-|\d+\.)?\s*(\*?Greeting\?|\*?Markdown bold\?|\*?Numbered steps|\*?Official tone|\*?Language match|\*?No internal thoughts|\*?No thought process|\*?Tone:\s*(?:Empathetic|Respectful|Courteous|Helpful)|[A-Za-z\s/]+\?\s*(?:Yes|No)\.?)/i.test(l)
     ) {
       lastContentLineIdx--;
     } else {
@@ -192,18 +192,20 @@ export function cleanGeminiOutput(rawText: string): string {
   const bodyIdx = text.search(/(?:^|\n)\s*(\*|-|\d+\.)?\s*\*?\*?Body:\*?\*?\s*\n?/i);
   if (bodyIdx !== -1) {
     text = text.slice(bodyIdx).replace(/^(?:[^\n]*\*?\*?Body:\*?\*?\s*\n?)/i, '');
-  } else {
-    // If there are multiple quoted greetings, find the last one (e.g. * "Namaste! ...)
-    const greetingMatches = [...text.matchAll(/(?:^|\n)\s*(?:[*-]\s*)?"(Namaste[!,\s]|Hello[!,\s]|नमस्ते[!,\s]|નમસ્તે[!,\s]|வணக்கம்[!,\s]|నమస్కారం[!,\s])/gi)];
-    if (greetingMatches.length > 1) {
-      const last = greetingMatches[greetingMatches.length - 1];
-      if (last.index !== undefined && last.index > 0) {
-        text = text.slice(last.index).trim();
-      }
+  }
+
+  // 4. Locate explicit citizen greeting if preceded by scratchpad lines (with or without bullets)
+  const directGreetingRegex = /(?:^|\n)\s*(?:[*-]\s*)?"?(Namaste[!,\s]|Hello[!,\s]|Hi[!,\s]|नमस्ते[!,\s]|નમસ્તે[!,\s]|வணக்கம்[!,\s]|నమస్కారం[!,\s]|Dear Citizen)/gi;
+  const greetingMatches = [...text.matchAll(directGreetingRegex)];
+  if (greetingMatches.length > 0) {
+    const lastGreeting = greetingMatches[greetingMatches.length - 1];
+    const preText = text.slice(0, lastGreeting.index);
+    if (/Intent:|Style Rule:|Since the user|Identity:|Scope of help:|Call to action:|User input:|User says:/i.test(preText)) {
+      text = text.slice(lastGreeting.index).trim();
     }
   }
 
-  // 4. Line by line filter for meta-rubric lines
+  // 5. Line by line filter for any leftover scratchpad lines (WITH OR WITHOUT bullets)
   let filteredLines: string[] = [];
 
   for (let line of text.split('\n')) {
@@ -215,27 +217,24 @@ export function cleanGeminiOutput(rawText: string): string {
       continue;
     }
 
-    // Skip scratchpad meta bullet points
-    if (/^\s*(\*|-|\d+\.)\s*(\*?\*?(?:User says|User input|User Question|User Query|Context|Role|Tone|Goal|Mission|Language Rule|Persona|Format|Constraint|Acknowledge|Ask for clarification|Provide categories|Maintain|Greeting|Content|Language|List areas|Keep it helpful|Empathy|Clarification|Prompting categories|Check|Did I|Is the|Are there|Output ONLY|Self-Correction|Note):?\*?\*?)/i.test(trimmed)) {
+    // Skip any scratchpad lines starting with known keywords (WITH OR WITHOUT bullets)
+    if (/^\s*(\*|-|\d+\.)?\s*(\*?\*?(?:Intent|Style Rule|Since the user|I need to|Identity|Scope of help|Call to action|User says|User input|User Question|User Query|Context|Role|Tone|Goal|Mission|Language Rule|Persona|Format|Constraint|Acknowledge|Ask for clarification|Provide categories|Maintain|Greeting|Content|Language|List areas|Keep it helpful|Empathy|Clarification|Prompting categories|Check|Did I|Is the|Are there|Output ONLY|Self-Correction|Note):?\*?\*?)/i.test(trimmed)) {
       continue;
     }
 
-    // Skip meta observation bullets like '* "hi bhai" is a greeting.' or '* The user is initiating...'
     if (/^\s*(\*|-)\s*"[^"]+"\s+is\s+/i.test(trimmed) || /^\s*(\*|-)\s*The user is\s+/i.test(trimmed) || /^\s*(\*|-)\s*Response should be\s+/i.test(trimmed)) {
       continue;
     }
 
-    // Skip checklist evaluations like 'Greeting? Yes.'
     if (/\?\s*(Yes|No)\.?$/i.test(trimmed)) {
       continue;
     }
 
-    // Strip leading bullets that wrap the actual greeting like '* "Namaste! ...'
     line = line.replace(/^\s*(\*|-)\s*"/, '');
     line = line.replace(/^\s*(\*|-)\s*/, '');
     line = line.replace(/^\*?\*?Body:\*?\*?\s*/i, '');
     line = line.replace(/^\*?\*?Greeting:\*?\*?\s*/i, '');
-    line = line.replace(/^\s{4,8}/, ''); // unindent indented body blocks
+    line = line.replace(/^\s{4,8}/, '');
 
     if (line.endsWith('"') && !line.includes('="')) {
       line = line.replace(/"$/, '');
@@ -273,12 +272,19 @@ async function callGeminiDirectly(
     'gemini-1.5-pro'
   ])).filter((x): x is string => typeof x === 'string' && x.length > 0 && !x.startsWith('bsai-'));
 
-  const systemPrompt = `You are Bharat Support AI (BSAI), the official authoritative citizen support assistant for Digital India.
-Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License, Ration Card), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
-
-Always reply in the SAME language or style the citizen uses! If they ask in Hinglish or greet informally (e.g. "hi bhai", "ghee khtm"), reply directly in natural, friendly, respectful Hinglish. Provide official .gov.in links and toll-free helplines when relevant.`;
+  const systemPrompt = `You are Bharat Support AI (BSAI), the official digital citizen assistant for Digital India.
+Your mission is to provide helpful, empathetic guidance to citizens on Government Schemes (PM-Kisan, Ayushman Bharat, PM Awas), official documents (Aadhaar, PAN, DigiLocker, Ration Card), and public grievances (CPGRAMS).
+You speak fluently in English, Hindi, and Hinglish. Always talk directly to the citizen with warmth and respect. Provide official .gov.in portal links and toll-free helplines when relevant.`;
 
   const conversationContents = [
+    {
+      role: 'user',
+      parts: [{ text: 'hello' }]
+    },
+    {
+      role: 'model',
+      parts: [{ text: 'Hello! I am Bharat Support AI (BSAI), your official assistant for Digital India. How can I help you today? You can ask me about government welfare schemes (like PM-Kisan or Ayushman Bharat), citizen documents (like Aadhaar or Ration Card), or help with civic grievances.' }]
+    },
     {
       role: 'user',
       parts: [{ text: 'hi bhai' }]
@@ -316,12 +322,15 @@ Always reply in the SAME language or style the citizen uses! If they ask in Hing
             contents: conversationContents,
             generationConfig: {
               temperature: 0.3,
-              maxOutputTokens: 1024
+              maxOutputTokens: 1024,
+              thinkingConfig: {
+                thinkingBudget: 0
+              }
             }
           })
         });
 
-        // Fallback if system_instruction is not supported on older endpoint
+        // Fallback if thinkingConfig or system_instruction is not supported on older endpoint
         if (!res.ok && res.status === 400) {
           res = await fetch(url, {
             method: 'POST',
