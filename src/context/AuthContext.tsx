@@ -76,6 +76,17 @@ const DEFAULT_USERS: User[] = [
     preferredLanguage: 'gu',
     createdAt: '2025-11-05T08:00:00Z',
   },
+  {
+    id: 'usr_admin_05',
+    name: 'Rajesh Varma',
+    email: 'admin@bsai.gov.in',
+    phone: '+91 11230 90001',
+    state: 'National HQ',
+    role: 'Support Admin',
+    avatarInitials: 'RV',
+    preferredLanguage: 'en',
+    createdAt: '2025-10-01T08:00:00Z',
+  },
 ];
 
 const INITIAL_NOTIFICATIONS: UserNotification[] = [

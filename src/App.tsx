@@ -13,15 +13,20 @@ import { SettingsView } from './components/views/SettingsView';
 import { CreateTicketModal } from './components/common/CreateTicketModal';
 import { SupportedLanguage, SupportCategory, Ticket } from './types';
 import { api } from './services/api';
+import { ShieldAlert, ArrowLeftRight, ArrowLeft } from 'lucide-react';
 
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { AuthModal } from './components/common/AuthModal';
 
 const AppContent: React.FC = () => {
+  const { currentUser, switchUser, allUsers } = useAuth();
   const [activeView, setActiveView] = useState<string>('landing');
   const [currentLanguage, setCurrentLanguage] = useState<SupportedLanguage>(() => {
     return (localStorage.getItem('bsai_language') as SupportedLanguage) || 'en';
   });
+
+  const isOfficerOrAdmin =
+    currentUser?.role === 'Nodal Officer' || currentUser?.role === 'Support Admin';
 
   // Load server settings on startup
   React.useEffect(() => {
@@ -72,7 +77,7 @@ const AppContent: React.FC = () => {
     setIsTicketModalOpen(true);
   };
 
-  // When ticket is created, celebrate and route to My Requests
+  // When ticket is created, route to My Requests
   const handleTicketCreated = (ticket: Ticket) => {
     setSelectedTicketIdForView(ticket.id);
     setActiveView('my-requests');
@@ -90,8 +95,23 @@ const AppContent: React.FC = () => {
     }
   };
 
+  const handleSwitchToOfficer = () => {
+    const officer =
+      allUsers.find((u) => u.role === 'Nodal Officer') ||
+      allUsers.find((u) => u.role === 'Support Admin') ||
+      allUsers[3];
+    if (officer) {
+      switchUser(officer.id);
+    }
+  };
+
+  // Check if current view is an officer/admin only view accessed by a citizen
+  const isRestrictedForCitizen =
+    !isOfficerOrAdmin &&
+    ['escalations', 'support-requests', 'analytics', 'settings'].includes(activeView);
+
   return (
-    <div className="min-h-screen bg-transparent text-bsai-indigo flex flex-col selection:bg-bsai-saffron selection:text-bsai-indigo relative">
+    <div className="min-h-screen bg-[#f7f8f5] text-[#1c2925] flex flex-col selection:bg-[#c25e00]/20 selection:text-[#1c2925] relative">
       {/* Top Navbar */}
       <Navbar
         currentLanguage={currentLanguage}
@@ -117,7 +137,7 @@ const AppContent: React.FC = () => {
         </main>
       ) : (
         <div className="flex-1 flex w-full min-h-[calc(100vh-65px)] relative px-2 sm:px-4 lg:px-6 py-2 sm:py-3 gap-3 sm:gap-4 lg:gap-5">
-          {/* Light-themed Frosted Pearl Dashboard Sidebar */}
+          {/* Dashboard Sidebar */}
           <Sidebar
             activeView={activeView}
             onNavigate={(view) => setActiveView(view)}
@@ -126,79 +146,120 @@ const AppContent: React.FC = () => {
 
           {/* Internal Dashboard Page Content */}
           <main className="workspace-view flex-1 w-full max-w-full overflow-x-hidden relative z-10">
-            {activeView === 'dashboard' && (
-              <DashboardHome
-                onNavigate={(v) => setActiveView(v)}
-                currentLanguage={currentLanguage}
-                onSelectTicket={(t) => {
-                  setSelectedTicketIdForView(t.id);
-                  setActiveView('my-requests');
-                }}
-                onNavigateToChatWithQuery={handleNavigateToChatWithQuery}
-                onOpenCreateTicket={(cat, title, desc, esc) => handleOpenCreateTicket(cat, title, desc, esc)}
-              />
-            )}
+            {isRestrictedForCitizen ? (
+              /* Role Restriction Guard Screen */
+              <div className="bg-white rounded-2xl border border-[#d8ded5] p-8 sm:p-12 text-center max-w-xl mx-auto my-12 shadow-sm space-y-4 animate-in fade-in">
+                <div className="w-14 h-14 rounded-2xl bg-rose-100 text-rose-800 flex items-center justify-center mx-auto shadow-xs">
+                  <ShieldAlert size={28} />
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-rose-800 uppercase tracking-wider mb-1">
+                    Official Nodal Desk Restricted
+                  </div>
+                  <h2 className="text-xl font-bold font-display text-[#1c2925]">
+                    Officer Access Required
+                  </h2>
+                  <p className="text-xs text-[#536157] mt-2 leading-relaxed">
+                    You are currently signed in as <strong className="text-[#1c2925]">{currentUser?.name} (Citizen)</strong>.
+                    District escalations queue, all citizen tickets inbox, and AI configuration settings are restricted to verified Government Nodal Officers and Administrators.
+                  </p>
+                </div>
 
-            {activeView === 'ai-assistant' && (
-              <AIAssistantView
-                initialQuery={chatInitialQuery}
-                initialCategory={chatInitialCategory}
-                currentLanguage={currentLanguage}
-                onLanguageChange={(lang) => setCurrentLanguage(lang)}
-                onCreateTicketFromChat={({ title, description, category }) =>
-                  handleOpenCreateTicket(category, title, description, false)
-                }
-                onEscalateToHuman={({ title, description, category, reason }) =>
-                  handleOpenCreateTicket(category, title, description, true)
-                }
-                onNavigateView={(v) => setActiveView(v)}
-              />
-            )}
+                <div className="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3">
+                  <button
+                    onClick={handleSwitchToOfficer}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-lg bg-rose-800 hover:bg-rose-900 text-white text-xs font-bold flex items-center justify-center gap-2 shadow-xs transition-colors cursor-pointer"
+                  >
+                    <ArrowLeftRight size={14} />
+                    <span>Switch to Nodal Officer (Amit Patel)</span>
+                  </button>
 
-            {activeView === 'my-requests' && (
-              <MyRequestsView
-                currentLanguage={currentLanguage}
-                selectedTicketId={selectedTicketIdForView}
-                onCreateNewRequest={() => handleOpenCreateTicket()}
-              />
-            )}
+                  <button
+                    onClick={() => setActiveView('my-requests')}
+                    className="w-full sm:w-auto px-4 py-2.5 rounded-lg bg-[#f4f6f2] hover:bg-[#e4ede7] border border-[#d8ded5] text-[#1c2925] text-xs font-bold flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                  >
+                    <ArrowLeft size={14} />
+                    <span>Go to My Citizen Requests</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {activeView === 'dashboard' && (
+                  <DashboardHome
+                    onNavigate={(v) => setActiveView(v)}
+                    currentLanguage={currentLanguage}
+                    onSelectTicket={(t) => {
+                      setSelectedTicketIdForView(t.id);
+                      setActiveView('my-requests');
+                    }}
+                    onNavigateToChatWithQuery={handleNavigateToChatWithQuery}
+                    onOpenCreateTicket={(cat, title, desc, esc) => handleOpenCreateTicket(cat, title, desc, esc)}
+                  />
+                )}
 
-            {activeView === 'support-requests' && (
-              <SupportRequestsView
-                currentLanguage={currentLanguage}
-                onCreateNewRequest={() => handleOpenCreateTicket()}
-              />
-            )}
+                {activeView === 'ai-assistant' && (
+                  <AIAssistantView
+                    initialQuery={chatInitialQuery}
+                    initialCategory={chatInitialCategory}
+                    currentLanguage={currentLanguage}
+                    onLanguageChange={(lang) => setCurrentLanguage(lang)}
+                    onCreateTicketFromChat={({ title, description, category }) =>
+                      handleOpenCreateTicket(category, title, description, false)
+                    }
+                    onEscalateToHuman={({ title, description, category, reason }) =>
+                      handleOpenCreateTicket(category, title, description, true)
+                    }
+                    onNavigateView={(v) => setActiveView(v)}
+                  />
+                )}
 
-            {activeView === 'knowledge-base' && (
-              <KnowledgeBaseView
-                currentLanguage={currentLanguage}
-                onAskAIAboutArticle={(topic, cat) =>
-                  handleNavigateToChatWithQuery(`Tell me about ${topic}`, cat)
-                }
-              />
-            )}
+                {activeView === 'my-requests' && (
+                  <MyRequestsView
+                    currentLanguage={currentLanguage}
+                    selectedTicketId={selectedTicketIdForView}
+                    onCreateNewRequest={() => handleOpenCreateTicket()}
+                  />
+                )}
 
-            {activeView === 'escalations' && (
-              <EscalationsView
-                currentLanguage={currentLanguage}
-                onSelectTicket={(tId) => {
-                  setSelectedTicketIdForView(tId);
-                  setActiveView('my-requests');
-                }}
-              />
-            )}
+                {activeView === 'support-requests' && (
+                  <SupportRequestsView
+                    currentLanguage={currentLanguage}
+                    onCreateNewRequest={() => handleOpenCreateTicket()}
+                  />
+                )}
 
-            {activeView === 'analytics' && (
-              <AnalyticsView currentLanguage={currentLanguage} />
-            )}
+                {activeView === 'knowledge-base' && (
+                  <KnowledgeBaseView
+                    currentLanguage={currentLanguage}
+                    onAskAIAboutArticle={(topic, cat) =>
+                      handleNavigateToChatWithQuery(`Tell me about ${topic}`, cat)
+                    }
+                  />
+                )}
 
-            {activeView === 'settings' && (
-              <SettingsView
-                currentLanguage={currentLanguage}
-                onLanguageChange={handleLanguageChange}
-                onResetDemo={handleResetDemo}
-              />
+                {activeView === 'escalations' && (
+                  <EscalationsView
+                    currentLanguage={currentLanguage}
+                    onSelectTicket={(tId) => {
+                      setSelectedTicketIdForView(tId);
+                      setActiveView('my-requests');
+                    }}
+                  />
+                )}
+
+                {activeView === 'analytics' && (
+                  <AnalyticsView currentLanguage={currentLanguage} />
+                )}
+
+                {activeView === 'settings' && (
+                  <SettingsView
+                    currentLanguage={currentLanguage}
+                    onLanguageChange={handleLanguageChange}
+                    onResetDemo={handleResetDemo}
+                  />
+                )}
+              </>
             )}
           </main>
         </div>
