@@ -151,7 +151,7 @@ export interface AnalyticsSummary {
 }
 
 export interface SystemSettings {
-  aiModel: 'bsai-neural-local' | 'gemini-1.5-flash' | 'gemini-2.0-flash' | 'gemini-1.5-pro' | 'gpt-4o-mini';
+  aiModel: 'bsai-neural-local' | 'gemini-1.5-flash' | 'gemini-2.0-flash' | 'gemini-1.5-pro' | 'gpt-4o-mini' | 'sarvamai/sarvam-2b';
   aiTemperature: number;
   autoEscalationThreshold: number; // e.g. 0.70
   defaultLanguage: SupportedLanguage;
@@ -163,4 +163,8 @@ export interface SystemSettings {
   apiKeySet: boolean;
   geminiApiKey?: string;
   geminiModel?: string;
+  aiProvider?: 'nvidia' | 'gemini';
+  nvidiaApiKey?: string;
+  nvidiaModel?: string;
+  nvidiaApiKeySet?: boolean;
 }

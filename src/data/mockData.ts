@@ -355,7 +355,7 @@ export const MOCK_KNOWLEDGE_ARTICLES: KnowledgeArticle[] = [
 ];
 
 export const MOCK_SETTINGS: SystemSettings = {
-  aiModel: 'bsai-neural-local',
+  aiModel: 'sarvamai/sarvam-2b',
   aiTemperature: 0.3,
   autoEscalationThreshold: 0.75,
   defaultLanguage: 'en',
@@ -364,5 +364,8 @@ export const MOCK_SETTINGS: SystemSettings = {
   reducedMotion3D: false,
   themeMode: 'light',
   notificationsEnabled: true,
-  apiKeySet: false
+  apiKeySet: false,
+  aiProvider: 'nvidia',
+  nvidiaModel: 'sarvamai/sarvam-2b',
+  nvidiaApiKeySet: false
 };

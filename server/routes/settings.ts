@@ -20,10 +20,13 @@ router.get('/', async (_req: Request, res: Response) => {
     });
 
     const activeGeminiKey = settingsMap.geminiApiKey || process.env.GEMINI_API_KEY || '';
+    const activeNvidiaKey = settingsMap.nvidiaApiKey || process.env.NVIDIA_API_KEY || '';
 
     const settings: SystemSettings = {
-      aiModel: (settingsMap.aiModel as any) || (activeGeminiKey ? 'gemini-1.5-flash' : 'bsai-neural-local'),
+      aiModel: (settingsMap.aiModel as any) || (activeNvidiaKey ? (settingsMap.nvidiaModel || 'sarvamai/sarvam-2b') : (activeGeminiKey ? 'gemini-1.5-flash' : 'sarvamai/sarvam-2b')),
       geminiModel: settingsMap.geminiModel || 'gemini-1.5-flash',
+      nvidiaModel: settingsMap.nvidiaModel || 'sarvamai/sarvam-2b',
+      aiProvider: (settingsMap.aiProvider as any) || (activeNvidiaKey ? 'nvidia' : (activeGeminiKey ? 'gemini' : 'nvidia')),
       aiTemperature: parseFloat(settingsMap.aiTemperature || '0.4'),
       autoEscalationThreshold: parseFloat(settingsMap.autoEscalationThreshold || '0.70'),
       defaultLanguage: (settingsMap.defaultLanguage as any) || 'en',
@@ -33,7 +36,9 @@ router.get('/', async (_req: Request, res: Response) => {
       themeMode: 'light',
       notificationsEnabled: settingsMap.notificationsEnabled === 'true',
       apiKeySet: Boolean(activeGeminiKey),
-      geminiApiKey: activeGeminiKey ? maskApiKey(activeGeminiKey) : ''
+      geminiApiKey: activeGeminiKey ? maskApiKey(activeGeminiKey) : '',
+      nvidiaApiKeySet: Boolean(activeNvidiaKey),
+      nvidiaApiKey: activeNvidiaKey ? maskApiKey(activeNvidiaKey) : ''
     };
 
     res.json(settings);
@@ -46,12 +51,12 @@ router.get('/', async (_req: Request, res: Response) => {
 // Update system settings
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const body = req.body as Partial<SystemSettings> & { geminiApiKey?: string };
+    const body = req.body as Partial<SystemSettings> & { geminiApiKey?: string; nvidiaApiKey?: string };
 
     for (const [key, value] of Object.entries(body)) {
       if (value !== undefined) {
         // If updating API key, skip if it's the masked placeholder
-        if (key === 'geminiApiKey' && typeof value === 'string' && value.includes('...')) {
+        if ((key === 'geminiApiKey' || key === 'nvidiaApiKey') && typeof value === 'string' && value.includes('...')) {
           continue;
         }
 
@@ -63,6 +68,9 @@ router.post('/', async (req: Request, res: Response) => {
         if (key === 'geminiApiKey' && typeof value === 'string' && value.trim()) {
           process.env.GEMINI_API_KEY = value.trim();
         }
+        if (key === 'nvidiaApiKey' && typeof value === 'string' && value.trim()) {
+          process.env.NVIDIA_API_KEY = value.trim();
+        }
       }
     }
 
@@ -70,6 +78,81 @@ router.post('/', async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Settings update error:', error);
     res.status(500).json({ error: 'Failed to save settings' });
+  }
+});
+
+// Verify / Test NVIDIA NIM API Key with Sarvam AI
+router.post('/verify-nvidia', async (req: Request, res: Response) => {
+  try {
+    let { apiKey, model } = req.body;
+    if (!apiKey || apiKey.includes('...')) {
+      const stored = await db.get('SELECT value FROM settings WHERE key = ?', ['nvidiaApiKey']);
+      apiKey = stored?.value || process.env.NVIDIA_API_KEY;
+    }
+
+    if (!apiKey) {
+      return res.status(400).json({ valid: false, message: 'Please enter an NVIDIA NIM API Key first.' });
+    }
+
+    const cleanKey = apiKey.trim();
+    const targetModel = model || 'sarvamai/sarvam-2b';
+
+    const testRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${cleanKey}`
+      },
+      body: JSON.stringify({
+        model: targetModel,
+        messages: [
+          { role: 'user', content: 'Namaste! Please reply with "Bharat Support AI is connected."' }
+        ],
+        temperature: 0.2,
+        max_tokens: 64
+      })
+    });
+
+    if (!testRes.ok) {
+      const errData: any = await testRes.json().catch(() => ({}));
+      const errMsg = errData?.error?.message || `NVIDIA returned HTTP ${testRes.status}: ${testRes.statusText}`;
+      return res.status(400).json({
+        valid: false,
+        message: `NVIDIA verification failed: ${errMsg}`
+      });
+    }
+
+    const data: any = await testRes.json();
+    const candidateText = data?.choices?.[0]?.message?.content || 'Namaste! Bharat Support AI is connected.';
+
+    // Save active verified key and model to settings database and process.env
+    await db.run(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      ['nvidiaApiKey', cleanKey]
+    );
+    await db.run(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      ['nvidiaModel', targetModel]
+    );
+    await db.run(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      ['aiProvider', 'nvidia']
+    );
+    await db.run(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      ['aiModel', targetModel]
+    );
+    process.env.NVIDIA_API_KEY = cleanKey;
+
+    res.json({
+      valid: true,
+      model: targetModel,
+      message: `Successfully connected to NVIDIA NIM (${targetModel})! Sarvam Indic language AI is now active.`,
+      sampleResponse: candidateText.trim().slice(0, 140)
+    });
+  } catch (error: any) {
+    console.error('NVIDIA verification error:', error);
+    res.status(500).json({ valid: false, message: error.message || 'Failed to verify NVIDIA API key' });
   }
 });
 

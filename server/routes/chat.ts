@@ -8,7 +8,7 @@ const router = Router();
 // Send a chat message and get AI response
 router.post('/message', async (req: Request, res: Response) => {
   try {
-    const { conversationId, query, language = 'en', category, citizenName = 'Citizen', apiKey, skipAiResponse } = req.body;
+    const { conversationId, query, language = 'en', category, citizenName = 'Citizen', apiKey, nvidiaApiKey, nvidiaModel, skipAiResponse } = req.body;
 
     if (!query || typeof query !== 'string') {
       return res.status(400).json({ error: 'Query is required' });
@@ -24,6 +24,25 @@ router.post('/message', async (req: Request, res: Response) => {
         );
       } catch (dbErr) {
         console.warn('Could not persist geminiApiKey to db:', dbErr);
+      }
+    }
+
+    const cleanNvidiaKey = (typeof nvidiaApiKey === 'string' && nvidiaApiKey.trim() && !nvidiaApiKey.includes('...')) ? nvidiaApiKey.trim() : undefined;
+    if (cleanNvidiaKey) {
+      process.env.NVIDIA_API_KEY = cleanNvidiaKey;
+      try {
+        await db.run(
+          'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+          ['nvidiaApiKey', cleanNvidiaKey]
+        );
+        if (nvidiaModel) {
+          await db.run(
+            'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+            ['nvidiaModel', nvidiaModel]
+          );
+        }
+      } catch (dbErr) {
+        console.warn('Could not persist nvidiaApiKey to db:', dbErr);
       }
     }
 
@@ -45,7 +64,14 @@ router.post('/message', async (req: Request, res: Response) => {
 
     // 2. Process query through AI Engine with priority apiKey
     const startTime = Date.now();
-    const aiResult = await processAIQuery(query, language as SupportedLanguage, category as SupportCategory, cleanApiKey);
+    const aiResult = await processAIQuery(
+      query,
+      language as SupportedLanguage,
+      category as SupportCategory,
+      cleanApiKey,
+      cleanNvidiaKey,
+      nvidiaModel
+    );
     const durationMs = Date.now() - startTime;
 
     // 3. Record AI Response Message

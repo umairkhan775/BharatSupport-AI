@@ -312,7 +312,105 @@ function cleanGeminiOutput(rawText: string): string {
   return result;
 }
 
-// Call Google Gemini API with citizen context and multi-language support
+// Call NVIDIA NIM API with Sarvam Indic AI (or configured NVIDIA model)
+async function callNvidiaAPI(
+  query: string,
+  language: SupportedLanguage = 'en',
+  categoryFilter?: SupportCategory,
+  kbArticles: any[] = [],
+  apiKeyOverride?: string,
+  modelOverride?: string
+): Promise<AIProcessingResult | null> {
+  try {
+    const keyRow = await db.get('SELECT value FROM settings WHERE key = ?', ['nvidiaApiKey']);
+    const modelRow = await db.get('SELECT value FROM settings WHERE key = ?', ['nvidiaModel']);
+
+    let apiKey = (apiKeyOverride || keyRow?.value || process.env.NVIDIA_API_KEY || '').trim();
+    if (apiKey.includes('...')) {
+      apiKey = (apiKeyOverride || process.env.NVIDIA_API_KEY || '').trim();
+    }
+    const model = modelOverride || modelRow?.value || 'sarvamai/sarvam-2b';
+
+    if (!apiKey || apiKey.length < 15 || apiKey.includes('...')) {
+      return null;
+    }
+
+    const kbContext = kbArticles.length > 0
+      ? `\nVerified Digital India Knowledge Base Records:\n` +
+        kbArticles.map((a, i) => `${i + 1}. [${a.category}] ${a.title}: ${a.summary}. Portal: ${a.official_portal_url || 'N/A'}`).join('\n')
+      : '';
+
+    const systemPrompt = `You are Bharat Support AI (BSAI), the official digital citizen assistant for Digital India.
+Your mission is to provide helpful, empathetic guidance to citizens on Government Schemes (PM-Kisan, Ayushman Bharat, PM Awas), official documents (Aadhaar, PAN, DigiLocker, Ration Card), and public grievances (CPGRAMS).
+You have specialized expertise in Indic languages including Hindi, Hinglish, Telugu, Tamil, Gujarati, and Indian English.
+Crucial Language Guideline:
+- Reply in the exact same language and dialect the citizen uses (e.g. if the citizen speaks in Hinglish, reply warmly in polite Hinglish).
+- Speak directly to the citizen with warmth and respect.
+- Mention official government portals (such as pmkisan.gov.in, pgportal.gov.in, uidai.gov.in, nfsa.gov.in) and toll-free citizen helplines when relevant.
+- Output ONLY the final helpful reply to the citizen. Do not include any internal chain-of-thought, reasoning steps, or prompt tags.
+${kbContext}`;
+
+    const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: query }
+        ],
+        temperature: 0.2,
+        max_tokens: 1024,
+        top_p: 0.9
+      })
+    });
+
+    if (!res.ok) {
+      console.warn('NVIDIA NIM API error in server engine:', res.status);
+      return null;
+    }
+
+    const data: any = await res.json();
+    const rawText = data?.choices?.[0]?.message?.content;
+    if (!rawText || !rawText.trim()) return null;
+
+    const cleanedText = cleanGeminiOutput(rawText) || rawText.trim();
+
+    let detectedCategory: SupportCategory = categoryFilter || 'Government Services';
+    const lower = query.toLowerCase();
+    if (lower.includes('health') || lower.includes('hospital') || lower.includes('ayushman') || lower.includes('इलाज')) {
+      detectedCategory = 'Healthcare';
+    } else if (lower.includes('scholarship') || lower.includes('school') || lower.includes('college') || lower.includes('student') || lower.includes('छात्रवृत्ति')) {
+      detectedCategory = 'Education';
+    } else if (lower.includes('aadhaar') || lower.includes('pan') || lower.includes('digilocker') || lower.includes('passport') || lower.includes('आधार')) {
+      detectedCategory = 'Documents & Identity';
+    } else if (lower.includes('complaint') || lower.includes('grievance') || lower.includes('cpgrams') || lower.includes('delay') || lower.includes('शिकायत')) {
+      detectedCategory = 'Grievance Redressal';
+    } else if (lower.includes('job') || lower.includes('employment') || lower.includes('loan') || lower.includes('mudra') || lower.includes('msme')) {
+      detectedCategory = 'Employment';
+    }
+
+    const escalationKeywords = ['human', 'agent', 'officer', 'talk to someone', 'escalate', 'supervisor', 'अधिकारी', 'बात करनी'];
+    const wantsHuman = escalationKeywords.some(k => lower.includes(k));
+
+    return {
+      reply: cleanedText,
+      category: detectedCategory,
+      confidence: 0.99,
+      sources: [`NVIDIA NIM (${model})`, 'Digital India National Portals'],
+      suggestedActions: ['Create Official Request', 'Track Progress', 'Escalate to Nodal Officer'],
+      requiresHumanReview: wantsHuman,
+      detectedIntent: 'nvidia_sarvam_generative_reasoning'
+    };
+  } catch (err) {
+    console.error('NVIDIA NIM API server execution error:', err);
+    return null;
+  }
+}
+
 // Call Google Gemini API with citizen context and multi-language support
 async function callGoogleGeminiAPI(
   query: string,
@@ -481,7 +579,9 @@ export async function processAIQuery(
   query: string,
   language: SupportedLanguage = 'en',
   categoryFilter?: SupportCategory,
-  apiKeyOverride?: string
+  apiKeyOverride?: string,
+  nvidiaApiKeyOverride?: string,
+  nvidiaModelOverride?: string
 ): Promise<AIProcessingResult> {
   const lowerQuery = query.toLowerCase().trim();
 
@@ -502,7 +602,13 @@ export async function processAIQuery(
     console.error('KB Search error in AI Engine:', e);
   }
 
-  // 3. Try Google Gemini API first if configured
+  // 3. Try NVIDIA NIM API (Sarvam Indic AI) first if configured
+  const nvidiaResult = await callNvidiaAPI(query, language, categoryFilter, kbResults, nvidiaApiKeyOverride, nvidiaModelOverride);
+  if (nvidiaResult) {
+    return nvidiaResult;
+  }
+
+  // 4. Try Google Gemini API next if configured
   const geminiResult = await callGoogleGeminiAPI(query, language, categoryFilter, kbResults, apiKeyOverride);
   if (geminiResult) {
     return geminiResult;
