@@ -371,22 +371,44 @@ ${kbContext}`;
       for (const apiVersion of ['v1beta', 'v1']) {
         try {
           const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${testModel}:generateContent?key=${apiKey}`;
-          const res = await fetch(url, {
+          let res = await fetch(url, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
+              system_instruction: {
+                parts: [{ text: systemInstructionText }]
+              },
               contents: [
                 {
                   role: 'user',
-                  parts: [{ text: `${systemInstructionText}\n\nCitizen Query: "${query}"` }]
+                  parts: [{ text: query }]
                 }
               ],
               generationConfig: {
-                temperature: 0.4,
+                temperature: 0.3,
                 maxOutputTokens: 1024,
               }
             })
           });
+
+          if (!res.ok && res.status === 400) {
+            res = await fetch(url, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [
+                  {
+                    role: 'user',
+                    parts: [{ text: `${systemInstructionText}\n\n[Citizen Message]: ${query}\n\n[Direct BSAI Response]:` }]
+                  }
+                ],
+                generationConfig: {
+                  temperature: 0.3,
+                  maxOutputTokens: 1024,
+                }
+              })
+            });
+          }
 
           if (res.ok) {
             const data: any = await res.json();

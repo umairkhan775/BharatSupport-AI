@@ -159,6 +159,66 @@ async function discoverGeminiModels(apiKey: string): Promise<string[]> {
   return [];
 }
 
+// Helper to strip reasoning scratchpads, thought tags, and rubric checks from model output
+export function cleanGeminiOutput(rawText: string): string {
+  if (!rawText) return '';
+
+  let text = rawText.replace(/\r\n/g, '\n');
+
+  // 1. Remove XML/HTML thinking tags
+  text = text.replace(/<think[\s\S]*?<\/think>/gi, '');
+  text = text.replace(/<thought[\s\S]*?<\/thought>/gi, '');
+
+  // 2. Cut off trailing evaluation, checklist, or self-correction blocks
+  const checklistMatch = text.search(/(?:\n|^)\s*(\*|-|\d+\.)?\s*(\*?Greeting\?|\*?Markdown bold\?|\*?Numbered steps|\*?Official tone|\*?Language match|\*?No internal thoughts|\*?Self-Correction|\*?Check:|\*?Evaluation|\*?Constraint Check)/i);
+  if (checklistMatch !== -1 && checklistMatch > 0) {
+    text = text.slice(0, checklistMatch);
+  }
+
+  // 3. Find if there is an explicit citizen greeting block (e.g. "Namaste!" or "Hello!")
+  const greetingRegex = /(?:^|\n)\s*(?:[*-]\s*)?"?(Namaste[!,\s]|Hello[!,\s]|नमस्ते[!,\s]|નમસ્તે[!,\s]|வணக்கம்[!,\s]|నమస్కారం[!,\s])/gi;
+  const matches = Array.from(text.matchAll(greetingRegex));
+  if (matches.length > 0) {
+    const lastGreeting = matches[matches.length - 1];
+    if (lastGreeting.index !== undefined && lastGreeting.index > 0) {
+      text = text.slice(lastGreeting.index).trim();
+    }
+  }
+
+  let lines = text.split('\n');
+  let cleanLines: string[] = [];
+
+  for (let line of lines) {
+    let trimmed = line.trim();
+    if (!trimmed) {
+      if (cleanLines.length > 0 && cleanLines[cleanLines.length - 1] !== '') cleanLines.push('');
+      continue;
+    }
+
+    // Skip planning / rubric bullets
+    if (/^(\*|-|\d+\.)\s*(User input|User Question|User Query|Persona|Mission|Language Rule|Format|Constraint|Greeting|Content|Language|List areas|Keep it helpful|Check|Did I|Is the|Are there|Output ONLY|Self-Correction|Note:)/i.test(trimmed)) {
+      continue;
+    }
+    if (/\?\s*(Yes|No)\.?$/i.test(trimmed)) {
+      continue;
+    }
+
+    // Clean leading bullet and quotes around greeting lines like * "Namaste! ...
+    line = line.replace(/^\s*(\*|-)\s*"/, '');
+    if (line.endsWith('"') && !line.includes('="')) {
+      line = line.replace(/"$/, '');
+    }
+
+    cleanLines.push(line);
+  }
+
+  let result = cleanLines.join('\n').trim();
+  if (result.startsWith('"') && result.endsWith('"') && result.length > 2) {
+    result = result.slice(1, -1).trim();
+  }
+  return result;
+}
+
 // Direct browser-to-Google-Gemini caller for zero-downtime AI chat
 async function callGeminiDirectly(
   query: string,
@@ -185,42 +245,69 @@ async function callGeminiDirectly(
 Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License, Ration Card), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
 
 LANGUAGE & CONVERSATION RULES:
-- The citizen may speak English, Hindi, Hinglish (Hindi written in Latin script, e.g. "ghee khtm", "rashan nahi mil raha", "kisan kist kab aayegi", "ration card kaise banaye"), or regional languages (${language}).
-- ALWAYS reply in the SAME language or style the citizen uses! If they ask in Hinglish, reply in natural, respectful Hinglish. If in Hindi, reply in Hindi. If in English, reply in English.
+- The citizen may speak English, Hindi, Hinglish (Hindi written in Latin script, e.g. "hi bhai", "ghee khtm", "rashan nahi mil raha", "kisan kist kab aayegi", "ration card kaise banaye"), or regional languages (${language}).
+- ALWAYS reply in the SAME language or style the citizen uses! If they ask in Hinglish or greet informally (like "hi bhai"), reply in natural, friendly, respectful Hinglish.
 - If a query is very brief or colloquial (like "ghee khtm" or "ration khtm"), understand the real-life citizen situation: explain that food grains/rations are distributed under NFSA & PMGKAY at Fair Price Shops (FPS), provide the National Food Helpline 1967 / 1800-180-2087, and guide them on how to check quota or lodge a dealer grievance.
 - FORMAT: Start with a respectful greeting (e.g. "Namaste!"), followed by clear markdown bold points and numbered steps. Include real .gov.in official portals and toll-free helplines.
-- CRITICAL: Output ONLY the final citizen-facing response. NEVER output internal thoughts, draft notes, or reasoning tags.`;
+- ABSOLUTELY FORBIDDEN: Do NOT output thought processes, reasoning bullets, prompt restatements, or checklists. Output ONLY the final answer to the citizen.`;
 
   for (const m of candidateModels) {
     for (const apiVersion of ['v1beta', 'v1']) {
       try {
         const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${m}:generateContent?key=${cleanKey}`;
-        const res = await fetch(url, {
+        
+        // Pass system_instruction properly so Gemini does not confuse system instructions with user turn
+        let res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
+            system_instruction: {
+              parts: [{ text: systemPrompt }]
+            },
             contents: [
               {
                 role: 'user',
-                parts: [{ text: `${systemPrompt}\n\nCitizen Query: "${query}"` }]
+                parts: [{ text: query }]
               }
             ],
             generationConfig: {
-              temperature: 0.4,
+              temperature: 0.3,
               maxOutputTokens: 1024
             }
           })
         });
 
+        // Fallback if system_instruction is not supported on older endpoint
+        if (!res.ok && res.status === 400) {
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [
+                {
+                  role: 'user',
+                  parts: [{ text: `${systemPrompt}\n\n[Citizen Message]: ${query}\n\n[Direct BSAI Response]:` }]
+                }
+              ],
+              generationConfig: {
+                temperature: 0.3,
+                maxOutputTokens: 1024
+              }
+            })
+          });
+        }
+
         if (res.ok) {
           const data = await res.json();
           const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
           if (rawText && rawText.trim()) {
-            const cleaned = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-            if (m !== settings.geminiModel) {
-              saveStoredSettings({ geminiModel: m });
+            const cleaned = cleanGeminiOutput(rawText);
+            if (cleaned && cleaned.trim()) {
+              if (m !== settings.geminiModel) {
+                saveStoredSettings({ geminiModel: m });
+              }
+              return { text: cleaned, model: m };
             }
-            return { text: cleaned, model: m };
           }
         }
       } catch (e) {
