@@ -56,32 +56,6 @@ function saveStoredEscalations(items: EscalationItem[]) {
   }
 }
 
-export function getEffectiveNvidiaKey(): string {
-  try {
-    const rawLocal = (localStorage.getItem('bsai_nvidia_key_raw') || '').trim();
-    if (rawLocal && !rawLocal.includes('...')) return rawLocal;
-
-    const legacyLocal = (localStorage.getItem('nvidia_api_key') || '').trim();
-    if (legacyLocal && !legacyLocal.includes('...')) return legacyLocal;
-
-    const rawSettings = localStorage.getItem('bsai_settings');
-    if (rawSettings) {
-      try {
-        const parsed = JSON.parse(rawSettings);
-        if (parsed.nvidiaApiKey && typeof parsed.nvidiaApiKey === 'string' && !parsed.nvidiaApiKey.includes('...')) {
-          return parsed.nvidiaApiKey.trim();
-        }
-      } catch {}
-    }
-
-    const envKey = ((import.meta as any).env?.VITE_NVIDIA_API_KEY as string || '').trim();
-    if (envKey && !envKey.includes('...')) return envKey;
-  } catch (e) {
-    console.error('Error reading effective NVIDIA key:', e);
-  }
-  return '';
-}
-
 export function getEffectiveGeminiKey(): string {
   try {
     const rawLocal = (localStorage.getItem('bsai_gemini_key_raw') || '').trim();
@@ -111,28 +85,18 @@ export function getEffectiveGeminiKey(): string {
 function getStoredSettings(): SystemSettings {
   try {
     const raw = localStorage.getItem('bsai_settings');
-    const effectiveGemini = getEffectiveGeminiKey();
-    const effectiveNvidia = getEffectiveNvidiaKey();
-    let base: SystemSettings = { ...MOCK_SETTINGS };
+    const effectiveKey = getEffectiveGeminiKey();
     if (raw) {
       const parsed = JSON.parse(raw);
-      base = { ...base, ...parsed };
+      if (effectiveKey) {
+        parsed.geminiApiKey = effectiveKey;
+        parsed.apiKeySet = true;
+      }
+      return { ...MOCK_SETTINGS, ...parsed };
     }
-    if (effectiveGemini) {
-      base.geminiApiKey = effectiveGemini;
-      base.apiKeySet = true;
+    if (effectiveKey) {
+      return { ...MOCK_SETTINGS, geminiApiKey: effectiveKey, apiKeySet: true };
     }
-    if (effectiveNvidia) {
-      base.nvidiaApiKey = effectiveNvidia;
-      base.nvidiaApiKeySet = true;
-    }
-    if (!base.nvidiaModel) {
-      base.nvidiaModel = 'sarvamai/sarvam-2b';
-    }
-    if (!base.aiProvider) {
-      base.aiProvider = effectiveNvidia ? 'nvidia' : (effectiveGemini ? 'gemini' : 'nvidia');
-    }
-    return base;
   } catch (e) {
     console.error('Error reading bsai_settings:', e);
   }
@@ -144,7 +108,7 @@ function saveStoredSettings(settings: Partial<SystemSettings>): SystemSettings {
     const curr = getStoredSettings();
     const updated = { ...curr, ...settings };
     
-    // 1. Only save Gemini key if real and not masked with dots
+    // Only save key if it is real and not masked with dots
     if (settings.geminiApiKey && typeof settings.geminiApiKey === 'string' && !settings.geminiApiKey.includes('...')) {
       const clean = settings.geminiApiKey.trim();
       localStorage.setItem('bsai_gemini_key_raw', clean);
@@ -152,25 +116,11 @@ function saveStoredSettings(settings: Partial<SystemSettings>): SystemSettings {
       updated.geminiApiKey = clean;
       updated.apiKeySet = true;
     } else {
+      // Preserve existing real key if incoming is masked or omitted
       const existing = getEffectiveGeminiKey();
       if (existing) {
         updated.geminiApiKey = existing;
         updated.apiKeySet = true;
-      }
-    }
-
-    // 2. Only save NVIDIA key if real and not masked with dots
-    if (settings.nvidiaApiKey && typeof settings.nvidiaApiKey === 'string' && !settings.nvidiaApiKey.includes('...')) {
-      const cleanNv = settings.nvidiaApiKey.trim();
-      localStorage.setItem('bsai_nvidia_key_raw', cleanNv);
-      localStorage.setItem('nvidia_api_key', cleanNv);
-      updated.nvidiaApiKey = cleanNv;
-      updated.nvidiaApiKeySet = true;
-    } else {
-      const existingNv = getEffectiveNvidiaKey();
-      if (existingNv) {
-        updated.nvidiaApiKey = existingNv;
-        updated.nvidiaApiKeySet = true;
       }
     }
     
@@ -416,62 +366,6 @@ You speak fluently in English, Hindi, and Hinglish. Always talk directly to the 
   return null;
 }
 
-// Direct browser-to-NVIDIA-NIM caller for Sarvam Indic AI
-async function callNvidiaDirectly(
-  query: string,
-  apiKey: string,
-  modelName: string = 'sarvamai/sarvam-2b',
-  language: SupportedLanguage = 'en'
-): Promise<{ text: string; model: string } | null> {
-  const cleanKey = apiKey.trim();
-  if (!cleanKey || cleanKey.includes('...')) return null;
-
-  const targetModel = modelName || 'sarvamai/sarvam-2b';
-
-  const systemPrompt = `You are Bharat Support AI (BSAI), the official digital citizen assistant for Digital India.
-Your mission is to provide helpful, empathetic guidance to citizens on Government Schemes (PM-Kisan, Ayushman Bharat, PM Awas), official documents (Aadhaar, PAN, DigiLocker, Ration Card), and public grievances (CPGRAMS).
-You have specialized expertise in Indian languages including Hindi, Hinglish, Telugu, Tamil, Gujarati, and Indian English.
-Crucial Language Guideline:
-- Reply in the exact same language and dialect the citizen uses (e.g. if the user talks in conversational Hinglish, reply warmly in polite Hinglish).
-- Speak directly to the citizen with warmth and respect.
-- Mention official government portals (such as pmkisan.gov.in, pgportal.gov.in, uidai.gov.in, nfsa.gov.in) and toll-free citizen helplines when relevant.
-- Output ONLY the final helpful reply to the citizen. Do not include any internal chain-of-thought, reasoning steps, or prompt tags.`;
-
-  try {
-    const res = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${cleanKey}`
-      },
-      body: JSON.stringify({
-        model: targetModel,
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: query }
-        ],
-        temperature: 0.2,
-        max_tokens: 1024,
-        top_p: 0.9
-      })
-    });
-
-    if (res.ok) {
-      const data = await res.json();
-      const rawText = data?.choices?.[0]?.message?.content;
-      if (rawText && rawText.trim()) {
-        const cleaned = cleanGeminiOutput(rawText);
-        return { text: cleaned || rawText.trim(), model: targetModel };
-      }
-    } else {
-      console.warn('NVIDIA NIM API responded with status:', res.status);
-    }
-  } catch (e) {
-    console.warn('NVIDIA NIM direct call failed:', e);
-  }
-  return null;
-}
-
 // Client-side AI fallback responder with context-aware citizen intelligence
 function generateFallbackChatResponse(query: string, language: SupportedLanguage = 'en'): {
   aiMessage: ChatMessage;
@@ -701,66 +595,14 @@ export const api = {
     category?: SupportCategory;
     citizenName?: string;
   }): Promise<{ aiMessage: ChatMessage; intent?: any; suggestedActions?: string[] }> {
-    const effectiveNvidiaKey = getEffectiveNvidiaKey();
-    const effectiveGeminiKey = getEffectiveGeminiKey();
+    const effectiveKey = getEffectiveGeminiKey();
     const settings = getStoredSettings();
 
-    // 1. If NVIDIA NIM key is configured and valid, invoke Sarvam AI (or chosen NVIDIA model)
-    if (effectiveNvidiaKey && effectiveNvidiaKey.length >= 20 && !effectiveNvidiaKey.includes('...')) {
-      const targetModel = settings.nvidiaModel || 'sarvamai/sarvam-2b';
-      const nvidiaResult = await callNvidiaDirectly(
-        params.query,
-        effectiveNvidiaKey,
-        targetModel,
-        params.language || 'en'
-      );
-
-      if (nvidiaResult && nvidiaResult.text) {
-        let cat: SupportCategory = params.category || 'Government Services';
-        const qLower = params.query.toLowerCase();
-        if (qLower.includes('health') || qLower.includes('ayushman') || qLower.includes('hospital')) cat = 'Healthcare';
-        else if (qLower.includes('scholarship') || qLower.includes('student') || qLower.includes('school')) cat = 'Education';
-        else if (qLower.includes('aadhaar') || qLower.includes('pan') || qLower.includes('digilocker')) cat = 'Documents & Identity';
-        else if (qLower.includes('complaint') || qLower.includes('grievance') || qLower.includes('electricity') || qLower.includes('water')) cat = 'Grievance Redressal';
-        else if (qLower.includes('skill') || qLower.includes('job') || qLower.includes('training')) cat = 'Employment';
-
-        const aiMessage: ChatMessage = {
-          id: `ai-${Date.now()}`,
-          sender: 'ai',
-          content: nvidiaResult.text,
-          timestamp: new Date().toISOString(),
-          category: cat,
-          confidence: 0.99,
-          language: params.language,
-          suggestedActions: ['Create Official Request', 'Track Application Status', 'Connect with Nodal Desk'],
-          sources: [`NVIDIA NIM (${nvidiaResult.model})`, 'Digital India National Portals']
-        };
-
-        // Asynchronously notify backend to record user message & audit trail in database
-        fetch(`${API_BASE}/chat/message`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...params, nvidiaApiKey: effectiveNvidiaKey, skipAiResponse: true }),
-        }).catch(() => {});
-
-        return {
-          aiMessage,
-          intent: {
-            category: cat,
-            confidence: 0.99,
-            urgency: 'Medium',
-            suggestedActions: ['Create Official Request', 'Track Application Status', 'Connect with Nodal Desk']
-          },
-          suggestedActions: ['Create Official Request', 'Track Application Status', 'Connect with Nodal Desk']
-        };
-      }
-    }
-
-    // 2. If Gemini API key is configured and valid, invoke Google Gemini for genuine generative reasoning
-    if (effectiveGeminiKey && effectiveGeminiKey.length >= 20 && !effectiveGeminiKey.includes('...')) {
+    // 1. If Gemini API key is configured and valid, invoke Google Gemini for genuine generative reasoning
+    if (effectiveKey && effectiveKey.length >= 20 && !effectiveKey.includes('...')) {
       const geminiResult = await callGeminiDirectly(
         params.query,
-        effectiveGeminiKey,
+        effectiveKey,
         settings.geminiModel || 'gemini-2.0-flash',
         params.language || 'en'
       );
@@ -790,7 +632,7 @@ export const api = {
         fetch(`${API_BASE}/chat/message`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...params, apiKey: effectiveGeminiKey, skipAiResponse: true }),
+          body: JSON.stringify({ ...params, apiKey: effectiveKey, skipAiResponse: true }),
         }).catch(() => {});
 
         return {
@@ -806,17 +648,12 @@ export const api = {
       }
     }
 
-    // 3. Try backend API with passed apiKey or nvidiaKey
+    // 2. Try backend API with passed apiKey
     try {
       const res = await fetch(`${API_BASE}/chat/message`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          ...params,
-          apiKey: effectiveGeminiKey,
-          nvidiaApiKey: effectiveNvidiaKey,
-          nvidiaModel: settings.nvidiaModel
-        }),
+        body: JSON.stringify({ ...params, apiKey: effectiveKey }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -828,7 +665,7 @@ export const api = {
       // Backend offline / not reachable
     }
 
-    // 4. Fallback to smart local responder
+    // 3. Fallback to smart local responder
     return generateFallbackChatResponse(params.query, params.language);
   },
 
@@ -1198,111 +1035,6 @@ export const api = {
     return { success: true, settings: updated };
   },
 
-  // Live NVIDIA NIM API Key Verification
-  async verifyNvidiaKey(
-    apiKey: string,
-    model: string = 'sarvamai/sarvam-2b'
-  ): Promise<{ valid: boolean; message: string; sampleResponse?: string; model?: string }> {
-    const cleanKey = apiKey.trim();
-    if (!cleanKey) {
-      return { valid: false, message: 'Please enter an NVIDIA NIM API key (starts with nvapi-).' };
-    }
-
-    const targetModel = model || 'sarvamai/sarvam-2b';
-
-    // 1. Try backend verification if running
-    try {
-      const res = await fetch(`${API_BASE}/settings/verify-nvidia`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: cleanKey, model: targetModel }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.valid) {
-          saveStoredSettings({
-            nvidiaApiKey: cleanKey,
-            nvidiaApiKeySet: true,
-            nvidiaModel: data.model || targetModel,
-            aiProvider: 'nvidia'
-          });
-          localStorage.setItem('nvidia_api_key', cleanKey);
-          localStorage.setItem('bsai_nvidia_key_raw', cleanKey);
-          return data;
-        }
-      }
-    } catch (e) {
-      // Backend offline / not reachable, perform direct live browser verification
-    }
-
-    // 2. Direct browser test against NVIDIA NIM completions endpoint
-    try {
-      const testRes = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${cleanKey}`
-        },
-        body: JSON.stringify({
-          model: targetModel,
-          messages: [
-            { role: 'user', content: 'Namaste! Please reply with "Bharat Support AI is connected."' }
-          ],
-          temperature: 0.2,
-          max_tokens: 64
-        })
-      });
-
-      if (testRes.ok) {
-        const data = await testRes.json();
-        const text = data?.choices?.[0]?.message?.content || 'Namaste! Bharat Support AI is connected.';
-        saveStoredSettings({
-          nvidiaApiKey: cleanKey,
-          nvidiaApiKeySet: true,
-          nvidiaModel: targetModel,
-          aiProvider: 'nvidia'
-        });
-        localStorage.setItem('nvidia_api_key', cleanKey);
-        localStorage.setItem('bsai_nvidia_key_raw', cleanKey);
-        return {
-          valid: true,
-          model: targetModel,
-          message: `NVIDIA NIM (${targetModel}) connected successfully! Live Indic language AI is now active.`,
-          sampleResponse: text.trim().slice(0, 140)
-        };
-      } else {
-        const errData = await testRes.json().catch(() => null);
-        const errMsg = errData?.error?.message || `NVIDIA returned HTTP ${testRes.status}`;
-        return {
-          valid: false,
-          message: `NVIDIA NIM verification failed: ${errMsg}`
-        };
-      }
-    } catch (err: any) {
-      // If browser CORS or network block prevented direct fetch, check key format
-      if (cleanKey.startsWith('nvapi-') && cleanKey.length >= 30) {
-        saveStoredSettings({
-          nvidiaApiKey: cleanKey,
-          nvidiaApiKeySet: true,
-          nvidiaModel: targetModel,
-          aiProvider: 'nvidia'
-        });
-        localStorage.setItem('nvidia_api_key', cleanKey);
-        localStorage.setItem('bsai_nvidia_key_raw', cleanKey);
-        return {
-          valid: true,
-          model: targetModel,
-          message: `NVIDIA NIM API key format validated and activated locally (${targetModel}).`,
-          sampleResponse: 'Namaste! Connection confirmed.'
-        };
-      }
-      return {
-        valid: false,
-        message: err.message ? `Connection error: ${err.message}` : 'Failed to reach NVIDIA NIM API. Please check your network and API key.'
-      };
-    }
-  },
-
   // Live Google Gemini API Key Verification
   async verifyGeminiKey(apiKey: string, model: string = 'gemini-2.0-flash'): Promise<{ valid: boolean; message: string; sampleResponse?: string; model?: string }> {
     const cleanKey = apiKey.trim();
@@ -1414,9 +1146,6 @@ export const api = {
       localStorage.removeItem('bsai_escalations');
       localStorage.removeItem('bsai_settings');
       localStorage.removeItem('gemini_api_key');
-      localStorage.removeItem('bsai_gemini_key_raw');
-      localStorage.removeItem('nvidia_api_key');
-      localStorage.removeItem('bsai_nvidia_key_raw');
       const res = await fetch(`${API_BASE}/reset-demo`, { method: 'POST' });
       if (res.ok) return await res.json();
     } catch (e) {

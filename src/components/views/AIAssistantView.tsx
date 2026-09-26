@@ -225,15 +225,6 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
                 >
                   <div className="whitespace-pre-wrap">{m.content}</div>
 
-                  {/* Active AI Source Badge */}
-                  {isAi && m.sources && m.sources.length > 0 && m.id !== 'msg-0' && (
-                    <div className="mt-2 flex items-center gap-1.5 text-[10px]">
-                      <span className="font-medium text-[#126a50] bg-[#eaf2ec] border border-[#dce9de] px-1.5 py-0.5 rounded text-[9px]">
-                        ⚡ {m.sources[0]}
-                      </span>
-                    </div>
-                  )}
-
                   {/* Actions inside AI bubble */}
                   {isAi && m.id !== 'msg-0' && (
                     <div className="mt-3 pt-2.5 border-t border-bsai-border/80 flex items-center justify-between gap-2 text-[11px]">
