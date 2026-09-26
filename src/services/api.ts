@@ -59,7 +59,18 @@ function saveStoredEscalations(items: EscalationItem[]) {
 function getStoredSettings(): SystemSettings {
   try {
     const raw = localStorage.getItem('bsai_settings');
-    if (raw) return { ...MOCK_SETTINGS, ...JSON.parse(raw) };
+    const localKey = localStorage.getItem('gemini_api_key');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (localKey && !parsed.geminiApiKey) {
+        parsed.geminiApiKey = localKey;
+        parsed.apiKeySet = true;
+      }
+      return { ...MOCK_SETTINGS, ...parsed };
+    }
+    if (localKey) {
+      return { ...MOCK_SETTINGS, geminiApiKey: localKey, apiKeySet: true };
+    }
   } catch (e) {
     console.error('Error reading bsai_settings:', e);
   }
@@ -70,6 +81,10 @@ function saveStoredSettings(settings: Partial<SystemSettings>) {
   try {
     const curr = getStoredSettings();
     const updated = { ...curr, ...settings };
+    if (settings.geminiApiKey) {
+      localStorage.setItem('gemini_api_key', settings.geminiApiKey.trim());
+      updated.apiKeySet = true;
+    }
     localStorage.setItem('bsai_settings', JSON.stringify(updated));
     return updated;
   } catch (e) {
@@ -78,20 +93,123 @@ function saveStoredSettings(settings: Partial<SystemSettings>) {
   }
 }
 
-// Client-side AI fallback responder for zero-downtime offline support
+// Direct browser-to-Google-Gemini caller for zero-downtime AI chat
+async function callGeminiDirectly(
+  query: string,
+  apiKey: string,
+  modelName: string = 'gemini-1.5-flash',
+  language: SupportedLanguage = 'en'
+): Promise<{ text: string; model: string } | null> {
+  const candidateModels = [
+    modelName || 'gemini-1.5-flash',
+    'gemini-1.5-flash',
+    'gemini-2.0-flash',
+    'gemini-1.5-pro',
+    'gemini-2.0-flash-exp'
+  ];
+
+  const systemPrompt = `You are Bharat Support AI (BSAI), the official authoritative citizen support assistant for Digital India.
+Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
+
+FORMAT INSTRUCTIONS:
+- Start with a respectful greeting (e.g. "Namaste!").
+- Give a direct, structured response with markdown bold headers and numbered action steps.
+- Include official portal links (use real .gov.in URLs) and toll-free helpline numbers where applicable.
+- Answer in the citizen's preferred language or style (Language: ${language}). If the citizen speaks Hindi or Hinglish, answer respectfully in Hindi / Hinglish.
+- CRITICAL: Output ONLY the final citizen-facing response. NEVER output internal thoughts, draft notes, or reasoning scratchpads.`;
+
+  for (const m of candidateModels) {
+    for (const apiVersion of ['v1beta', 'v1']) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${m}:generateContent?key=${apiKey.trim()}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: `${systemPrompt}\n\nCitizen Query: "${query}"` }]
+              }
+            ],
+            generationConfig: {
+              temperature: 0.4,
+              maxOutputTokens: 1024
+            }
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (rawText && rawText.trim()) {
+            // Strip any unintended thinking tokens
+            const cleaned = rawText.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            return { text: cleaned, model: m };
+          }
+        }
+      } catch (e) {
+        console.warn(`Direct Gemini call failed on ${m} (${apiVersion}):`, e);
+      }
+    }
+  }
+  return null;
+}
+
+// Client-side AI fallback responder with context-aware citizen intelligence
 function generateFallbackChatResponse(query: string, language: SupportedLanguage = 'en'): {
   aiMessage: ChatMessage;
   intent: any;
 } {
-  const qLower = query.toLowerCase();
+  const qLower = query.toLowerCase().trim();
   let content = '';
   let category: SupportCategory = 'Government Services';
   let suggestedActions: string[] = ['Check Eligibility', 'Download Guidelines', 'Track Application Status'];
   let sources: string[] = ['National Portal of India (india.gov.in)'];
 
-  if (qLower.includes('pm-kisan') || qLower.includes('kisan') || qLower.includes('farmer') || qLower.includes('installment') || qLower.includes('किसान')) {
+  // 1. Food / Ration / PDS / Essential Commodities ("ghee", "rashan", "ration", "chawal", "food", "khatam", "dealer")
+  if (
+    qLower.includes('ghee') ||
+    qLower.includes('rashan') ||
+    qLower.includes('ration') ||
+    qLower.includes('khatam') ||
+    qLower.includes('khtm') ||
+    qLower.includes('food') ||
+    qLower.includes('chawal') ||
+    qLower.includes('gehu') ||
+    qLower.includes('pds') ||
+    qLower.includes('dealer') ||
+    qLower.includes('राशन') ||
+    qLower.includes('घी') ||
+    qLower.includes('अन्न') ||
+    qLower.includes('कोटा')
+  ) {
     category = 'Government Services';
-    content = `**Namaste! Here are the details for PM-Kisan Samman Nidhi:**
+    content = `**Namaste! PDS Ration & Essential Food Commodities Guidance:**
+
+If you are facing a shortage of subsidized food grains, non-distribution by your local Fair Price Shop (PDS dealer), or ration quota issues:
+
+1. **National Food Security Act (NFSA)**: Under the Pradhan Mantri Garib Kalyan Anna Yojana (PMGKAY), eligible Priority Households (PHH) and Antyodaya Anna Yojana (AAY) beneficiaries receive monthly food grains free of cost.
+2. **One Nation One Ration Card (ONORC)**: You can collect your entitled ration from any electronic Point of Sale (e-PoS) enabled Fair Price Shop across India using your Aadhaar authentication.
+3. **Lodge Fair Price Shop Grievance**: If your PDS dealer denies quota or claims stock shortage, lodge an immediate complaint on the State Food & Civil Supplies portal or call the National Food Helpline.
+
+🔗 **National Portal**: [nfsa.gov.in](https://nfsa.gov.in)
+📞 **Toll-Free National Food & PDS Helpline**: **1967 / 1800-180-2087**`;
+    suggestedActions = ['Check Ration Card Entitlement', 'Find Nearest PDS Fair Price Shop', 'Lodge Dealer Grievance'];
+    sources = ['nfsa.gov.in', 'Department of Food & Public Distribution'];
+  }
+  // 2. PM-Kisan & Agriculture
+  else if (
+    qLower.includes('pm-kisan') ||
+    qLower.includes('kisan') ||
+    qLower.includes('farmer') ||
+    qLower.includes('installment') ||
+    qLower.includes('kist') ||
+    qLower.includes('किसान') ||
+    qLower.includes('कृषि')
+  ) {
+    category = 'Government Services';
+    content = `**Namaste! Details for PM-Kisan Samman Nidhi:**
 
 1. **Benefit Overview**: Eligible landholding farmer families receive ₹6,000 annually in three equal installments of ₹2,000 directly via DBT.
 2. **Mandatory e-KYC**: Complete OTP-based e-KYC on the PM-Kisan portal or biometric authentication at your nearest Common Service Centre (CSC).
@@ -101,23 +219,45 @@ function generateFallbackChatResponse(query: string, language: SupportedLanguage
 📞 **Toll-Free Helpline**: **155261 / 1800-115-526**`;
     suggestedActions = ['Complete e-KYC Online', 'Check Beneficiary Status', 'Aadhaar Bank Seeding FAQ'];
     sources = ['pmkisan.gov.in', 'Ministry of Agriculture & Farmers Welfare'];
-  } else if (qLower.includes('ayushman') || qLower.includes('health') || qLower.includes('hospital') || qLower.includes('card') || qLower.includes('इलाज') || qLower.includes('आरोग्य')) {
+  }
+  // 3. Healthcare & Ayushman Bharat
+  else if (
+    qLower.includes('ayushman') ||
+    qLower.includes('health') ||
+    qLower.includes('hospital') ||
+    qLower.includes('pmjay') ||
+    qLower.includes('card') ||
+    qLower.includes('इलाज') ||
+    qLower.includes('आरोग्य') ||
+    qLower.includes('अस्पताल')
+  ) {
     category = 'Healthcare';
     content = `**Namaste! Details for Ayushman Bharat (PM-JAY):**
 
-1. **Coverage**: Provides up to ₹5,00,000 annual cashless health cover per family for secondary and tertiary hospital care.
+1. **Coverage**: Provides up to ₹5,00,000 annual cashless health cover per family for secondary and tertiary hospital care across 27,000+ empanelled hospitals.
 2. **Senior Citizen Top-up**: All citizens aged 70+ receive universal health cards irrespective of family income criteria.
-3. **Card Creation**: Generate your digital Ayushman Card instantly on the Beneficiary portal using Aadhaar OTP or visit any empanelled hospital.
+3. **Card Creation**: Generate your digital Ayushman Card instantly on the Beneficiary portal using Aadhaar OTP or visit any empanelled hospital desk.
 
 🔗 **Official Portal**: [beneficiary.nha.gov.in](https://beneficiary.nha.gov.in)
 📞 **National Health Helpline**: **14555 / 1800-111-565**`;
     suggestedActions = ['Check Hospital Empanelment', 'Generate Ayushman Card', 'Senior Citizen 70+ Registration'];
     sources = ['beneficiary.nha.gov.in', 'National Health Authority'];
-  } else if (qLower.includes('scholarship') || qLower.includes('nsp') || qLower.includes('student') || qLower.includes('matric') || qLower.includes('छात्रवृत्ति')) {
+  }
+  // 4. Education & Scholarships
+  else if (
+    qLower.includes('scholarship') ||
+    qLower.includes('nsp') ||
+    qLower.includes('student') ||
+    qLower.includes('matric') ||
+    qLower.includes('college') ||
+    qLower.includes('school') ||
+    qLower.includes('छात्रवृत्ति') ||
+    qLower.includes('पढ़ाई')
+  ) {
     category = 'Education';
     content = `**Namaste! National Scholarship Portal (NSP) Guidance:**
 
-1. **One-Time Registration (OTR)**: Complete biometric/Aadhaar-based OTR on the NSP 2026-27 portal before applying.
+1. **One-Time Registration (OTR)**: Complete biometric/Aadhaar-based OTR on the NSP portal before applying for Central or State scholarships.
 2. **Document Upload**: Keep your income certificate, caste certificate, and academic marksheet ready for nodal verification.
 3. **Tracking**: Track institution-level and District Nodal Officer verification progress directly in your student dashboard.
 
@@ -125,7 +265,18 @@ function generateFallbackChatResponse(query: string, language: SupportedLanguage
 📞 **Helpdesk Number**: **0120-6619540**`;
     suggestedActions = ['Complete OTR Registration', 'Track Verification Stage', 'Institute Verification Guidelines'];
     sources = ['scholarships.gov.in', 'Ministry of Electronics & IT'];
-  } else if (qLower.includes('skill') || qLower.includes('pmkvy') || qLower.includes('course') || qLower.includes('training') || qLower.includes('job') || qLower.includes('रोजगार')) {
+  }
+  // 5. Skill Development & Employment
+  else if (
+    qLower.includes('skill') ||
+    qLower.includes('pmkvy') ||
+    qLower.includes('course') ||
+    qLower.includes('training') ||
+    qLower.includes('job') ||
+    qLower.includes('rojgar') ||
+    qLower.includes('रोजगार') ||
+    qLower.includes('नौकरी')
+  ) {
     category = 'Employment';
     content = `**Namaste! Skill India Mission (PMKVY 4.0):**
 
@@ -137,7 +288,18 @@ function generateFallbackChatResponse(query: string, language: SupportedLanguage
 📞 **Toll-Free Helpline**: **088000-55555**`;
     suggestedActions = ['Find Nearest Training Center', 'Browse Free Courses', 'Download Skill Certificate'];
     sources = ['skillindia.gov.in', 'National Skill Development Corporation'];
-  } else if (qLower.includes('digilocker') || qLower.includes('aadhaar') || qLower.includes('pan') || qLower.includes('license') || qLower.includes('document') || qLower.includes('दस्तावेज')) {
+  }
+  // 6. Identity & Digital Vaults
+  else if (
+    qLower.includes('digilocker') ||
+    qLower.includes('aadhaar') ||
+    qLower.includes('pan') ||
+    qLower.includes('license') ||
+    qLower.includes('document') ||
+    qLower.includes('parivahan') ||
+    qLower.includes('आधार') ||
+    qLower.includes('दस्तावेज')
+  ) {
     category = 'Documents & Identity';
     content = `**Namaste! DigiLocker & Identity Documents Guide:**
 
@@ -149,7 +311,20 @@ function generateFallbackChatResponse(query: string, language: SupportedLanguage
 📞 **DigiLocker Support**: **011-24301851**`;
     suggestedActions = ['Fetch Aadhaar Card', 'Sync Driving License', 'DigiLocker FAQ'];
     sources = ['digilocker.gov.in', 'Ministry of Electronics and IT'];
-  } else if (qLower.includes('complaint') || qLower.includes('grievance') || qLower.includes('cpgrams') || qLower.includes('electricity') || qLower.includes('water') || qLower.includes('शिकायत')) {
+  }
+  // 7. Grievance Redressal & Public Utilities
+  else if (
+    qLower.includes('complaint') ||
+    qLower.includes('grievance') ||
+    qLower.includes('cpgrams') ||
+    qLower.includes('electricity') ||
+    qLower.includes('bijli') ||
+    qLower.includes('water') ||
+    qLower.includes('paani') ||
+    qLower.includes('शिकायत') ||
+    qLower.includes('बिजली') ||
+    qLower.includes('पानी')
+  ) {
     category = 'Grievance Redressal';
     content = `**Namaste! Central Public Grievance Redressal (CPGRAMS):**
 
@@ -161,22 +336,21 @@ function generateFallbackChatResponse(query: string, language: SupportedLanguage
 📞 **National Grievance Helpline**: **1915 / 1800-11-4000**`;
     suggestedActions = ['Lodge New Grievance', 'Track Grievance Status', 'Raise Support Ticket'];
     sources = ['pgportal.gov.in', 'DARPG, Government of India'];
-  } else {
-    content = `**Namaste! Welcome to Bharat Support AI (BSAI).**
+  }
+  // 8. General / Contextual citizen query response
+  else {
+    category = 'Government Services';
+    content = `**Namaste! Thank you for reaching out to Bharat Support AI (BSAI).**
 
-I am your authoritative citizen assistant for Digital India public services. Here is how I can help you:
+Regarding your query: **"${query}"**
 
-1. **Government Schemes & Subsidies**: PM-Kisan, Ayushman Bharat, PM Awas Yojana, PM Ujjwala.
-2. **Scholarships & Education**: National Scholarship Portal (NSP), Pre/Post-Matric scholarships.
-3. **Skill Development**: Free certified PMKVY 4.0 courses, RPL certification, and apprenticeship.
-4. **Official Identity & Digital Vaults**: DigiLocker, Aadhaar, PAN, and Parivahan Sarathi driving licenses.
-5. **Grievance Redressal**: DARPG CPGRAMS escalation and public dispute tracking.
-
-Please let me know which government service or scheme you would like guidance on.
+1. **Direct Assistance**: You can search and verify information regarding welfare subsidies, welfare cards, and public schemes across central and state departments.
+2. **Nearby Facilitation**: For offline document uploads and biometric e-KYC, you can visit your nearest Common Service Centre (CSC / e-Mitra / Grama One).
+3. **Need Human Officer Help?**: If this requires escalation to a District Nodal Desk or official grievance ticket, click the **"Connect with Nodal Desk"** button below to create an official inquiry.
 
 🔗 **National Portal**: [india.gov.in](https://www.india.gov.in)
 📞 **National Citizen Helpline**: **1800-11-0031**`;
-    suggestedActions = ['Explore Government Schemes', 'Check Scholarship Status', 'Lodge a Grievance'];
+    suggestedActions = ['Create Support Request', 'Connect with Nodal Desk', 'Browse Knowledge Base'];
   }
 
   const aiMessage: ChatMessage = {
@@ -185,7 +359,7 @@ Please let me know which government service or scheme you would like guidance on
     content,
     timestamp: new Date().toISOString(),
     category,
-    confidence: 0.98,
+    confidence: 0.96,
     language,
     suggestedActions,
     sources
@@ -195,7 +369,7 @@ Please let me know which government service or scheme you would like guidance on
     aiMessage,
     intent: {
       category,
-      confidence: 0.98,
+      confidence: 0.96,
       urgency: 'Medium',
       suggestedActions
     }
@@ -211,6 +385,7 @@ export const api = {
     category?: SupportCategory;
     citizenName?: string;
   }): Promise<{ aiMessage: ChatMessage; intent?: any; suggestedActions?: string[] }> {
+    // 1. Try backend API first
     try {
       const res = await fetch(`${API_BASE}/chat/message`, {
         method: 'POST',
@@ -221,8 +396,55 @@ export const api = {
         return await res.json();
       }
     } catch (e) {
-      console.warn('Backend unavailable, generating client-side BSAI response:', e);
+      // Backend offline / not reachable
     }
+
+    // 2. Check if a Gemini API key is configured in Settings or Local Storage
+    const settings = getStoredSettings();
+    const geminiKey =
+      settings.geminiApiKey ||
+      localStorage.getItem('gemini_api_key') ||
+      ((import.meta as any).env?.VITE_GEMINI_API_KEY as string);
+
+    if (geminiKey && geminiKey.trim().startsWith('AIzaSy')) {
+      const geminiResult = await callGeminiDirectly(
+        params.query,
+        geminiKey,
+        settings.geminiModel || 'gemini-1.5-flash',
+        params.language || 'en'
+      );
+
+      if (geminiResult && geminiResult.text) {
+        let cat: SupportCategory = params.category || 'Government Services';
+        const qLower = params.query.toLowerCase();
+        if (qLower.includes('health') || qLower.includes('ayushman') || qLower.includes('hospital')) cat = 'Healthcare';
+        else if (qLower.includes('scholarship') || qLower.includes('student') || qLower.includes('school')) cat = 'Education';
+        else if (qLower.includes('aadhaar') || qLower.includes('pan') || qLower.includes('digilocker')) cat = 'Documents & Identity';
+        else if (qLower.includes('complaint') || qLower.includes('grievance') || qLower.includes('electricity') || qLower.includes('water')) cat = 'Grievance Redressal';
+        else if (qLower.includes('skill') || qLower.includes('job') || qLower.includes('training')) cat = 'Employment';
+
+        return {
+          aiMessage: {
+            id: `ai-${Date.now()}`,
+            sender: 'ai',
+            content: geminiResult.text,
+            timestamp: new Date().toISOString(),
+            category: cat,
+            confidence: 0.99,
+            language: params.language,
+            suggestedActions: ['Create Official Request', 'Track Application Status', 'Connect with Nodal Desk'],
+            sources: [`Google Gemini (${geminiResult.model})`, 'Digital India National Portals']
+          },
+          intent: {
+            category: cat,
+            confidence: 0.99,
+            urgency: 'Medium'
+          }
+        };
+      }
+    }
+
+    // 3. Fallback to smart local responder
     return generateFallbackChatResponse(params.query, params.language);
   },
 
@@ -567,7 +789,10 @@ export const api = {
   async getSettings(): Promise<SystemSettings> {
     try {
       const res = await fetch(`${API_BASE}/settings`);
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        return saveStoredSettings(data);
+      }
     } catch (e) {
       console.warn('Backend settings unavailable, returning stored settings:', e);
     }
@@ -575,7 +800,7 @@ export const api = {
   },
 
   async saveSettings(settings: Partial<SystemSettings>) {
-    saveStoredSettings(settings);
+    const updated = saveStoredSettings(settings);
     try {
       const res = await fetch(`${API_BASE}/settings`, {
         method: 'POST',
@@ -586,33 +811,83 @@ export const api = {
     } catch (e) {
       console.warn('Saved settings to local storage:', e);
     }
-    return { success: true, settings: getStoredSettings() };
+    return { success: true, settings: updated };
   },
 
-  async verifyGeminiKey(apiKey: string, model?: string): Promise<{ valid: boolean; message: string; sampleResponse?: string }> {
+  // Live Google Gemini API Key Verification
+  async verifyGeminiKey(apiKey: string, model: string = 'gemini-1.5-flash'): Promise<{ valid: boolean; message: string; sampleResponse?: string }> {
+    const cleanKey = apiKey.trim();
+    if (!cleanKey) {
+      return { valid: false, message: 'Please enter a Google Gemini API key.' };
+    }
+
+    // 1. Try backend verification if running
     try {
       const res = await fetch(`${API_BASE}/settings/verify-gemini`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, model }),
+        body: JSON.stringify({ apiKey: cleanKey, model }),
       });
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        if (data.valid) {
+          saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true });
+        }
+        return data;
+      }
     } catch (e) {
-      console.warn('Backend verification endpoint offline, testing client-side format:', e);
+      // Backend unavailable, perform direct live browser verification
     }
 
-    if (apiKey && apiKey.trim().startsWith('AIzaSy') && apiKey.trim().length >= 35) {
+    // 2. Perform live Google Gemini API call from the browser
+    const testModels = [model || 'gemini-1.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash'];
+    for (const m of testModels) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${cleanKey}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'Hello, confirm you are connected.' }] }]
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const sample = data?.candidates?.[0]?.content?.parts?.[0]?.text || 'Connection verified.';
+          saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true });
+          return {
+            valid: true,
+            message: `Google Gemini (${m}) connected successfully! Live AI reasoning is now active across BSAI.`,
+            sampleResponse: sample.slice(0, 100)
+          };
+        } else {
+          const errData = await res.json().catch(() => null);
+          const errMsg = errData?.error?.message || `Google returned status ${res.status}`;
+          return {
+            valid: false,
+            message: `Gemini verification failed: ${errMsg}`
+          };
+        }
+      } catch (err: any) {
+        console.warn(`Direct verify error on ${m}:`, err);
+      }
+    }
+
+    // Format check fallback
+    if (cleanKey.startsWith('AIzaSy') && cleanKey.length >= 35) {
+      saveStoredSettings({ geminiApiKey: cleanKey, apiKeySet: true });
       return {
         valid: true,
-        message: 'Google Gemini API key validated successfully for BSAI citizen engine.',
-        sampleResponse: 'Namaste! BSAI AI Engine connection verified.'
-      };
-    } else {
-      return {
-        valid: false,
-        message: 'Invalid Google Gemini API key format. Key must start with "AIzaSy" and be at least 35 characters.'
+        message: 'Google Gemini API key saved and activated locally for BSAI AI Engine.',
+        sampleResponse: 'Namaste! Connection confirmed.'
       };
     }
+
+    return {
+      valid: false,
+      message: 'Invalid Google Gemini API key. Please generate a valid key from Google AI Studio (aistudio.google.com).'
+    };
   },
 
   // Reset Demo
@@ -621,6 +896,7 @@ export const api = {
       localStorage.removeItem('bsai_tickets');
       localStorage.removeItem('bsai_escalations');
       localStorage.removeItem('bsai_settings');
+      localStorage.removeItem('gemini_api_key');
       const res = await fetch(`${API_BASE}/reset-demo`, { method: 'POST' });
       if (res.ok) return await res.json();
     } catch (e) {

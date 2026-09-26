@@ -109,7 +109,7 @@ const AppContent: React.FC = () => {
   // Check if current view is an officer/admin only view accessed by a citizen
   const isRestrictedForCitizen =
     !isOfficerOrAdmin &&
-    ['escalations', 'support-requests', 'analytics', 'settings'].includes(activeView);
+    ['escalations', 'support-requests', 'analytics'].includes(activeView);
 
   return (
     <div className="min-h-screen bg-[#f7f8f5] text-[#1c2925] flex flex-col selection:bg-[#c25e00]/20 selection:text-[#1c2925] relative">

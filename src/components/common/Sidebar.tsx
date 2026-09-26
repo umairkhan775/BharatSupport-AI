@@ -79,6 +79,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badgeColor: 'bg-emerald-100 text-emerald-800 border-emerald-200'
     },
     { id: 'knowledge-base', label: t('nav_knowledge_base') || 'Schemes & Guidelines', icon: BookOpen },
+    { id: 'settings', label: t('nav_settings') || 'Settings & AI Key', icon: Settings },
   ];
 
   const officerNavItems = [
