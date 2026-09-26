@@ -227,92 +227,88 @@ function cleanGeminiOutput(rawText: string): string {
   let text = rawText.replace(/\r\n/g, '\n');
 
   // 1. Remove XML/HTML thinking tags
+  text = text.replace(/<think[\s\S]*?<\/think>/gi, '');
   text = text.replace(/<thought[\s\S]*?<\/thought>/gi, '');
-  text = text.replace(/<thinking[\s\S]*?<\/thinking>/gi, '');
 
-  // 2. Normalize draft headers and greetings before slicing
-  text = text.replace(/(?:\n|^)\s*(\*|-|\d+\.)\s*\*?Header:\*?\s*/gi, '\n### ');
-  text = text.replace(/(?:\n|^)\s*(\*|-|\d+\.)\s*\*?Greeting:\*?\s*/gi, '\n');
+  // 2. Cut off trailing evaluation/checklist blocks from the bottom
+  const lines = text.split('\n');
+  let lastContentLineIdx = lines.length - 1;
+  while (lastContentLineIdx >= 0) {
+    const l = lines[lastContentLineIdx].trim();
+    if (!l) {
+      lastContentLineIdx--;
+      continue;
+    }
+    if (
+      /^\s*(\*|-|\d+\.)\s*(\*?Greeting\?|\*?Markdown bold\?|\*?Numbered steps|\*?Official tone|\*?Language match|\*?No internal thoughts|\*?No thought process|\*?Tone:\s*(?:Empathetic|Respectful|Courteous|Helpful)|[A-Za-z\s/]+\?\s*(?:Yes|No)\.?)/i.test(l)
+    ) {
+      lastContentLineIdx--;
+    } else {
+      break;
+    }
+  }
+  text = lines.slice(0, lastContentLineIdx + 1).join('\n');
 
-  // 3. Cut off trailing self-correction, drafting review, or checklist blocks
-  const cutoffMatch = text.search(/(?:\n\s*\n|\n)\s*(\*|-|\d+\.)?\s*\(?(\*?Self-Correction|\*?Final Structure|\*?Final Response|\*?Ensure the tone|\*?Verify the link|\*?Steps to find specific courses|\(Proceeding|\*?Check:|\*?Evaluation)/i);
-  if (cutoffMatch !== -1 && cutoffMatch > 0) {
-    text = text.slice(0, cutoffMatch);
+  // 3. If there is a section with "* *Body:*" or "* Body:", slice from there
+  const bodyIdx = text.search(/(?:^|\n)\s*(\*|-|\d+\.)?\s*\*?\*?Body:\*?\*?\s*\n?/i);
+  if (bodyIdx !== -1) {
+    text = text.slice(bodyIdx).replace(/^(?:[^\n]*\*?\*?Body:\*?\*?\s*\n?)/i, '');
+  } else {
+    // If there are multiple quoted greetings, find the last one (e.g. * "Namaste! ...)
+    const greetingMatches = [...text.matchAll(/(?:^|\n)\s*(?:[*-]\s*)?"(Namaste[!,\s]|Hello[!,\s]|नमस्ते[!,\s]|નમસ્તે[!,\s]|வணக்கம்[!,\s]|నమస్కారం[!,\s])/gi)];
+    if (greetingMatches.length > 1) {
+      const last = greetingMatches[greetingMatches.length - 1];
+      if (last.index !== undefined && last.index > 0) {
+        text = text.slice(last.index).trim();
+      }
+    }
   }
 
-  // 4. If there is a clear start of the direct citizen response (### Header or ## Header)
-  const h3Idx = text.indexOf('### ');
-  const h2Idx = text.indexOf('## ');
-  if (h3Idx > 0) {
-    text = text.slice(h3Idx);
-  } else if (h2Idx > 0) {
-    text = text.slice(h2Idx);
-  }
+  // 4. Line by line filter for meta-rubric lines
+  let filteredLines: string[] = [];
 
-  let lines = text.split('\n');
-  let cleanLines: string[] = [];
-
-  for (let line of lines) {
+  for (let line of text.split('\n')) {
     let trimmed = line.trim();
-
-    // Skip empty lines if at start
     if (!trimmed) {
-      if (cleanLines.length > 0 && cleanLines[cleanLines.length - 1] !== '') cleanLines.push('');
+      if (filteredLines.length > 0 && filteredLines[filteredLines.length - 1] !== '') {
+        filteredLines.push('');
+      }
       continue;
     }
 
-    // Skip parenthetical self-corrections or drafting notes
-    if (/^\(Self-Correction/i.test(trimmed) || /^\(Note/i.test(trimmed) || /^\(Drafting/i.test(trimmed) || /^\(Proceeding/i.test(trimmed)) {
+    // Skip scratchpad meta bullet points
+    if (/^\s*(\*|-|\d+\.)\s*(\*?\*?(?:User says|User input|User Question|User Query|Context|Role|Tone|Goal|Mission|Language Rule|Persona|Format|Constraint|Acknowledge|Ask for clarification|Provide categories|Maintain|Greeting|Content|Language|List areas|Keep it helpful|Empathy|Clarification|Prompting categories|Check|Did I|Is the|Are there|Output ONLY|Self-Correction|Note):?\*?\*?)/i.test(trimmed)) {
       continue;
     }
 
-    // Skip metadata / rubric / planning scratchpad bullet lines
-    if (/^(\*|-|\d+\.)\s*(User Question|User Query|User Intent|Citizen Query|User asks|Context|Identity|Persona|Role|My Role|Mission|Purpose|Response Format|Goal|Format|Outline|Checklist|Did I|Is the tone|Are links|Is it in|Scheme Name|Topic|Constraint Check|Sectors:|Steps:|Directly to citizen|Markdown formatting|Official portal links|No meta-commentary|Help\/Support|Greeting Rule|Introduction of services|Call to action|Intent|Is there any|Output the exact|Input:|Objective:|Key Features:|Check|Acknowledge|Explain what|List common|Provide steps|Provide official):?/i.test(trimmed)) {
+    // Skip meta observation bullets like '* "hi bhai" is a greeting.' or '* The user is initiating...'
+    if (/^\s*(\*|-)\s*"[^"]+"\s+is\s+/i.test(trimmed) || /^\s*(\*|-)\s*The user is\s+/i.test(trimmed) || /^\s*(\*|-)\s*Response should be\s+/i.test(trimmed)) {
       continue;
     }
 
-    // Skip numbered rubric items (e.g. "1. Direct, structured answer with markdown", "2. Official website links", "3. Tone: Courteous")
-    if (/^\d+\.\s*(Direct, structured answer|Official website links|Tone:|Clear headings|Accurate advice)/i.test(trimmed)) {
+    // Skip checklist evaluations like 'Greeting? Yes.'
+    if (/\?\s*(Yes|No)\.?$/i.test(trimmed)) {
       continue;
     }
 
-    // Skip evaluation checklist lines
-    if (/^(\*|-|\d+\.)\s*(\*?Check:\*?|Check:|Are there|Did I|Is it|Is the|Tone:|Links:|Script\?|Warm greeting\?)[^\n]*(Yes|No|Courteous|Clean|Authoritative|Done)\.?$/i.test(trimmed)) {
-      continue;
-    }
-    if (/^(\*|-|\d+\.)\s*[^:\n?]+\?\s*(Yes|No)\.?$/i.test(trimmed)) {
-      continue;
-    }
+    // Strip leading bullets that wrap the actual greeting like '* "Namaste! ...'
+    line = line.replace(/^\s*(\*|-)\s*"/, '');
+    line = line.replace(/^\s*(\*|-)\s*/, '');
+    line = line.replace(/^\*?\*?Body:\*?\*?\s*/i, '');
+    line = line.replace(/^\*?\*?Greeting:\*?\*?\s*/i, '');
+    line = line.replace(/^\s{4,8}/, ''); // unindent indented body blocks
 
-    // Transform outline markers into clean markdown
-    line = line.replace(/^\s*(\*|-|\d+\.)\s*\*?Section \d+:?\s*([^*:\n]+)\*?:?\s*/i, '\n### $2\n');
-    line = line.replace(/^\s*(\*|-|\d+\.)\s*\*?Header:\*?\s*/i, '### ');
-    line = line.replace(/^\s*(\*|-|\d+\.)\s*\*?Greeting:\*?\s*/i, '');
-    line = line.replace(/^\s*(\*|-|\d+\.)\s*\*?Direct Answer:\*?\s*/i, '');
-    line = line.replace(/^\s*(\*|-|\d+\.)\s*\*?Body:\*?\s*/i, '');
-    line = line.replace(/^(\s*(\*|-|\d+\.)\s*)?\*?Introduction:\*?\s*/i, '');
-    line = line.replace(/^(\s*(\*|-|\d+\.)\s*)?\*?Overview:\*?\s*/i, '**Overview:** ');
-    line = line.replace(/^(\s*(\*|-|\d+\.)\s*)?\*?Sectors:\*?\s*/i, '\n**Available Sectors & Courses:**\n');
-    line = line.replace(/^(\s*(\*|-|\d+\.)\s*)?\*?Course Categories:\*?\s*/i, '\n**Course Categories:**\n');
-    line = line.replace(/^(\s*(\*|-|\d+\.)\s*)?\*?(How to (?:find\/enroll|find|enroll|apply)):\*?\s*/i, '\n**How to Find and Enroll:**\n');
-    line = line.replace(/^(\s*(\*|-|\d+\.)\s*)?\*?Official Portal:\*?\s*/i, '**Official Portal:** ');
-    line = line.replace(/^(\s*(\*|-|\d+\.)\s*)?\*?Helpline:\*?\s*/i, '**Official Helpline:** ');
-    line = line.replace(/^(\s*(\*|-|\d+\.)\s*)?\*?Links:\*?\s*/i, '**Official Links:** ');
-
-    // Normalize deep indentation
-    line = line.replace(/^ {4,8}(\*|-|\d+\.)/, '  $1');
-
-    // Strip quotation marks wrapping single lines
-    let lineTrim = line.trim();
-    if (lineTrim.startsWith('"') && lineTrim.endsWith('"') && lineTrim.length > 2) {
-      line = lineTrim.slice(1, -1);
+    if (line.endsWith('"') && !line.includes('="')) {
+      line = line.replace(/"$/, '');
     }
 
-    cleanLines.push(line);
+    filteredLines.push(line);
   }
 
-  let result = cleanLines.join('\n').trim();
-  result = result.replace(/\n{3,}/g, '\n\n');
+  let result = filteredLines.join('\n').trim();
+  if (result.startsWith('"') && result.endsWith('"') && result.length > 2) {
+    result = result.slice(1, -1).trim();
+  }
   return result;
 }
 
@@ -367,6 +363,29 @@ ${kbContext}`;
     let replyText = '';
     let resolvedModel = model;
 
+    const conversationContents = [
+      {
+        role: 'user',
+        parts: [{ text: 'hi bhai' }]
+      },
+      {
+        role: 'model',
+        parts: [{ text: 'Namaste! Main Bharat Support AI (BSAI) hoon. Main aapki sarkar ki yojanaon (PM-Kisan, Ayushman Bharat, PM Awas), documents (Aadhaar, Ration Card), ya kisi grievance complaint mein kaise madad kar sakta hoon?' }]
+      },
+      {
+        role: 'user',
+        parts: [{ text: 'ghee khtm' }]
+      },
+      {
+        role: 'model',
+        parts: [{ text: 'Namaste! Agar aapke yahan ration ya zaroori khadya samagri khatam ho gayi hai, toh NFSA aur PM Garib Kalyan Anna Yojana ke tehat aap nazdeeki Fair Price Shop (ration dukan) se muft ration le sakte hain:\n\n1. **One Nation One Ration Card**: Kisi bhi FPS dukan par biometric pramanikaran se ration lein.\n2. **Toll-Free Food Helpline**: Agar ration dealer mana kare, toh turant **1967** ya **1800-180-2087** par call karein.\n3. **Portal**: [nfsa.gov.in](https://nfsa.gov.in)\n\nKya aapko ration card status check karna hai ya dealer ke khilaf shikayat darj karni hai?' }]
+      },
+      {
+        role: 'user',
+        parts: [{ text: query }]
+      }
+    ];
+
     for (const testModel of candidateModels) {
       for (const apiVersion of ['v1beta', 'v1']) {
         try {
@@ -378,12 +397,7 @@ ${kbContext}`;
               system_instruction: {
                 parts: [{ text: systemInstructionText }]
               },
-              contents: [
-                {
-                  role: 'user',
-                  parts: [{ text: query }]
-                }
-              ],
+              contents: conversationContents,
               generationConfig: {
                 temperature: 0.3,
                 maxOutputTokens: 1024,
@@ -396,12 +410,7 @@ ${kbContext}`;
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                contents: [
-                  {
-                    role: 'user',
-                    parts: [{ text: `${systemInstructionText}\n\n[Citizen Message]: ${query}\n\n[Direct BSAI Response]:` }]
-                  }
-                ],
+                contents: conversationContents,
                 generationConfig: {
                   temperature: 0.3,
                   maxOutputTokens: 1024,

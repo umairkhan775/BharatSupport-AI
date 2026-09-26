@@ -169,50 +169,82 @@ export function cleanGeminiOutput(rawText: string): string {
   text = text.replace(/<think[\s\S]*?<\/think>/gi, '');
   text = text.replace(/<thought[\s\S]*?<\/thought>/gi, '');
 
-  // 2. Cut off trailing evaluation, checklist, or self-correction blocks
-  const checklistMatch = text.search(/(?:\n|^)\s*(\*|-|\d+\.)?\s*(\*?Greeting\?|\*?Markdown bold\?|\*?Numbered steps|\*?Official tone|\*?Language match|\*?No internal thoughts|\*?Self-Correction|\*?Check:|\*?Evaluation|\*?Constraint Check)/i);
-  if (checklistMatch !== -1 && checklistMatch > 0) {
-    text = text.slice(0, checklistMatch);
+  // 2. Cut off trailing evaluation/checklist blocks from the bottom
+  const lines = text.split('\n');
+  let lastContentLineIdx = lines.length - 1;
+  while (lastContentLineIdx >= 0) {
+    const l = lines[lastContentLineIdx].trim();
+    if (!l) {
+      lastContentLineIdx--;
+      continue;
+    }
+    if (
+      /^\s*(\*|-|\d+\.)\s*(\*?Greeting\?|\*?Markdown bold\?|\*?Numbered steps|\*?Official tone|\*?Language match|\*?No internal thoughts|\*?No thought process|\*?Tone:\s*(?:Empathetic|Respectful|Courteous|Helpful)|[A-Za-z\s/]+\?\s*(?:Yes|No)\.?)/i.test(l)
+    ) {
+      lastContentLineIdx--;
+    } else {
+      break;
+    }
   }
+  text = lines.slice(0, lastContentLineIdx + 1).join('\n');
 
-  // 3. Find if there is an explicit citizen greeting block (e.g. "Namaste!" or "Hello!")
-  const greetingRegex = /(?:^|\n)\s*(?:[*-]\s*)?"?(Namaste[!,\s]|Hello[!,\s]|नमस्ते[!,\s]|નમસ્તે[!,\s]|வணக்கம்[!,\s]|నమస్కారం[!,\s])/gi;
-  const matches = Array.from(text.matchAll(greetingRegex));
-  if (matches.length > 0) {
-    const lastGreeting = matches[matches.length - 1];
-    if (lastGreeting.index !== undefined && lastGreeting.index > 0) {
-      text = text.slice(lastGreeting.index).trim();
+  // 3. If there is a section with "* *Body:*" or "* Body:", slice from there
+  const bodyIdx = text.search(/(?:^|\n)\s*(\*|-|\d+\.)?\s*\*?\*?Body:\*?\*?\s*\n?/i);
+  if (bodyIdx !== -1) {
+    text = text.slice(bodyIdx).replace(/^(?:[^\n]*\*?\*?Body:\*?\*?\s*\n?)/i, '');
+  } else {
+    // If there are multiple quoted greetings, find the last one (e.g. * "Namaste! ...)
+    const greetingMatches = [...text.matchAll(/(?:^|\n)\s*(?:[*-]\s*)?"(Namaste[!,\s]|Hello[!,\s]|नमस्ते[!,\s]|નમસ્તે[!,\s]|வணக்கம்[!,\s]|నమస్కారం[!,\s])/gi)];
+    if (greetingMatches.length > 1) {
+      const last = greetingMatches[greetingMatches.length - 1];
+      if (last.index !== undefined && last.index > 0) {
+        text = text.slice(last.index).trim();
+      }
     }
   }
 
-  let lines = text.split('\n');
-  let cleanLines: string[] = [];
+  // 4. Line by line filter for meta-rubric lines
+  let filteredLines: string[] = [];
 
-  for (let line of lines) {
+  for (let line of text.split('\n')) {
     let trimmed = line.trim();
     if (!trimmed) {
-      if (cleanLines.length > 0 && cleanLines[cleanLines.length - 1] !== '') cleanLines.push('');
+      if (filteredLines.length > 0 && filteredLines[filteredLines.length - 1] !== '') {
+        filteredLines.push('');
+      }
       continue;
     }
 
-    // Skip planning / rubric bullets
-    if (/^(\*|-|\d+\.)\s*(User input|User Question|User Query|Persona|Mission|Language Rule|Format|Constraint|Greeting|Content|Language|List areas|Keep it helpful|Check|Did I|Is the|Are there|Output ONLY|Self-Correction|Note:)/i.test(trimmed)) {
+    // Skip scratchpad meta bullet points
+    if (/^\s*(\*|-|\d+\.)\s*(\*?\*?(?:User says|User input|User Question|User Query|Context|Role|Tone|Goal|Mission|Language Rule|Persona|Format|Constraint|Acknowledge|Ask for clarification|Provide categories|Maintain|Greeting|Content|Language|List areas|Keep it helpful|Empathy|Clarification|Prompting categories|Check|Did I|Is the|Are there|Output ONLY|Self-Correction|Note):?\*?\*?)/i.test(trimmed)) {
       continue;
     }
+
+    // Skip meta observation bullets like '* "hi bhai" is a greeting.' or '* The user is initiating...'
+    if (/^\s*(\*|-)\s*"[^"]+"\s+is\s+/i.test(trimmed) || /^\s*(\*|-)\s*The user is\s+/i.test(trimmed) || /^\s*(\*|-)\s*Response should be\s+/i.test(trimmed)) {
+      continue;
+    }
+
+    // Skip checklist evaluations like 'Greeting? Yes.'
     if (/\?\s*(Yes|No)\.?$/i.test(trimmed)) {
       continue;
     }
 
-    // Clean leading bullet and quotes around greeting lines like * "Namaste! ...
+    // Strip leading bullets that wrap the actual greeting like '* "Namaste! ...'
     line = line.replace(/^\s*(\*|-)\s*"/, '');
+    line = line.replace(/^\s*(\*|-)\s*/, '');
+    line = line.replace(/^\*?\*?Body:\*?\*?\s*/i, '');
+    line = line.replace(/^\*?\*?Greeting:\*?\*?\s*/i, '');
+    line = line.replace(/^\s{4,8}/, ''); // unindent indented body blocks
+
     if (line.endsWith('"') && !line.includes('="')) {
       line = line.replace(/"$/, '');
     }
 
-    cleanLines.push(line);
+    filteredLines.push(line);
   }
 
-  let result = cleanLines.join('\n').trim();
+  let result = filteredLines.join('\n').trim();
   if (result.startsWith('"') && result.endsWith('"') && result.length > 2) {
     result = result.slice(1, -1).trim();
   }
@@ -244,19 +276,36 @@ async function callGeminiDirectly(
   const systemPrompt = `You are Bharat Support AI (BSAI), the official authoritative citizen support assistant for Digital India.
 Your mission is to provide accurate, official, helpful, and empathetic guidance on Government Schemes (PM-Kisan, Ayushman Bharat, NSP, PMKVY, PDS Ration, Ujjwala, PM Awas), citizen documents (Aadhaar, PAN, DigiLocker, Driving License, Ration Card), essential civic grievances (electricity, water, public distribution), and DBT subsidies.
 
-LANGUAGE & CONVERSATION RULES:
-- The citizen may speak English, Hindi, Hinglish (Hindi written in Latin script, e.g. "hi bhai", "ghee khtm", "rashan nahi mil raha", "kisan kist kab aayegi", "ration card kaise banaye"), or regional languages (${language}).
-- ALWAYS reply in the SAME language or style the citizen uses! If they ask in Hinglish or greet informally (like "hi bhai"), reply in natural, friendly, respectful Hinglish.
-- If a query is very brief or colloquial (like "ghee khtm" or "ration khtm"), understand the real-life citizen situation: explain that food grains/rations are distributed under NFSA & PMGKAY at Fair Price Shops (FPS), provide the National Food Helpline 1967 / 1800-180-2087, and guide them on how to check quota or lodge a dealer grievance.
-- FORMAT: Start with a respectful greeting (e.g. "Namaste!"), followed by clear markdown bold points and numbered steps. Include real .gov.in official portals and toll-free helplines.
-- ABSOLUTELY FORBIDDEN: Do NOT output thought processes, reasoning bullets, prompt restatements, or checklists. Output ONLY the final answer to the citizen.`;
+Always reply in the SAME language or style the citizen uses! If they ask in Hinglish or greet informally (e.g. "hi bhai", "ghee khtm"), reply directly in natural, friendly, respectful Hinglish. Provide official .gov.in links and toll-free helplines when relevant.`;
+
+  const conversationContents = [
+    {
+      role: 'user',
+      parts: [{ text: 'hi bhai' }]
+    },
+    {
+      role: 'model',
+      parts: [{ text: 'Namaste! Main Bharat Support AI (BSAI) hoon. Main aapki sarkar ki yojanaon (PM-Kisan, Ayushman Bharat, PM Awas), documents (Aadhaar, Ration Card), ya kisi grievance complaint mein kaise madad kar sakta hoon?' }]
+    },
+    {
+      role: 'user',
+      parts: [{ text: 'ghee khtm' }]
+    },
+    {
+      role: 'model',
+      parts: [{ text: 'Namaste! Agar aapke yahan ration ya zaroori khadya samagri khatam ho gayi hai, toh NFSA aur PM Garib Kalyan Anna Yojana ke tehat aap nazdeeki Fair Price Shop (ration dukan) se muft ration le sakte hain:\n\n1. **One Nation One Ration Card**: Kisi bhi FPS dukan par biometric pramanikaran se ration lein.\n2. **Toll-Free Food Helpline**: Agar ration dealer mana kare, toh turant **1967** ya **1800-180-2087** par call karein.\n3. **Portal**: [nfsa.gov.in](https://nfsa.gov.in)\n\nKya aapko ration card status check karna hai ya dealer ke khilaf shikayat darj karni hai?' }]
+    },
+    {
+      role: 'user',
+      parts: [{ text: query }]
+    }
+  ];
 
   for (const m of candidateModels) {
     for (const apiVersion of ['v1beta', 'v1']) {
       try {
         const url = `https://generativelanguage.googleapis.com/${apiVersion}/models/${m}:generateContent?key=${cleanKey}`;
         
-        // Pass system_instruction properly so Gemini does not confuse system instructions with user turn
         let res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -264,12 +313,7 @@ LANGUAGE & CONVERSATION RULES:
             system_instruction: {
               parts: [{ text: systemPrompt }]
             },
-            contents: [
-              {
-                role: 'user',
-                parts: [{ text: query }]
-              }
-            ],
+            contents: conversationContents,
             generationConfig: {
               temperature: 0.3,
               maxOutputTokens: 1024
@@ -283,12 +327,7 @@ LANGUAGE & CONVERSATION RULES:
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              contents: [
-                {
-                  role: 'user',
-                  parts: [{ text: `${systemPrompt}\n\n[Citizen Message]: ${query}\n\n[Direct BSAI Response]:` }]
-                }
-              ],
+              contents: conversationContents,
               generationConfig: {
                 temperature: 0.3,
                 maxOutputTokens: 1024
